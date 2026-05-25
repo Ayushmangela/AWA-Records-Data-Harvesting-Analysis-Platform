@@ -1,0 +1,37 @@
+# Runtime / logs
+*.log
+logs/
+pipeline.log
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+backend/venv/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Large datasets
+backend/data/raw_pdfs/
+backend/data/processed/
+backend/data/*.pdf
+
+# Mac / editor junk
+.DS_Store
+.vscode/
+.idea/
+
+# Database
+*.db
+*.sqlite3
+
+# Cache/temp
+.cache/
+tmp/
+temp/

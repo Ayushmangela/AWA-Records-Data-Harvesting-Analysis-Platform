@@ -1,0 +1,73 @@
+import logging
+from datetime import datetime
+
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+
+logger = logging.getLogger(__name__)
+
+scheduler = BackgroundScheduler()
+
+
+def nightly_sync_job():
+    """Check USDA for new records, download PDFs, and process them."""
+    start_time = datetime.now()
+    logger.info("Nightly USDA sync started at %s", start_time.isoformat())
+
+    downloaded = 0
+    processed = 0
+
+    try:
+        from app.services.scraper import check_and_download_new_pdfs
+
+        downloaded = check_and_download_new_pdfs()
+    except Exception:
+        logger.exception("Error during PDF download step")
+        downloaded = 0
+
+    try:
+        from app.services.pipeline import process_new_pdfs
+
+        processed = process_new_pdfs()
+        logger.info("Processed %s new PDF(s)", processed)
+    except ImportError:
+        logger.warning("pipeline.process_new_pdfs not implemented yet")
+    except Exception:
+        logger.exception("Error during PDF processing step")
+
+    end_time = datetime.now()
+    duration = (end_time - start_time).total_seconds()
+    logger.info(
+        "Nightly USDA sync finished at %s (%.1fs) — downloaded=%s processed=%s total_added=%s",
+        end_time.isoformat(),
+        duration,
+        downloaded,
+        processed,
+        downloaded + processed,
+    )
+
+
+def start_scheduler():
+    """Start the background scheduler and register the nightly job."""
+    if scheduler.running:
+        logger.debug("Scheduler already running")
+        return
+
+    scheduler.add_job(
+        nightly_sync_job,
+        CronTrigger(hour=2, minute=0),
+        id="nightly_usda_sync",
+        replace_existing=True,
+    )
+    scheduler.start()
+    logger.info("Background scheduler started (nightly job at 02:00)")
+
+
+def stop_scheduler():
+    """Shut down the background scheduler."""
+    if not scheduler.running:
+        logger.debug("Scheduler not running")
+        return
+
+    scheduler.shutdown(wait=False)
+    logger.info("Background scheduler stopped")

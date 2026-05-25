@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+sqlalchemy
+pandas
+psycopg2-binary
+pdfplumber
+pytesseract
+pdf2image
+Pillow
+spacy
+requests
+playwright
+python-dotenv
+apscheduler
+pydantic
