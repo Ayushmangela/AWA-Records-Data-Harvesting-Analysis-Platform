@@ -15,35 +15,32 @@ def nightly_sync_job():
     logger.info("Nightly USDA sync started at %s", start_time.isoformat())
 
     downloaded = 0
-    processed = 0
 
     try:
         from app.services.scraper import check_and_download_new_pdfs
-
         downloaded = check_and_download_new_pdfs()
     except Exception:
         logger.exception("Error during PDF download step")
         downloaded = 0
 
     try:
-        from app.services.pipeline import process_new_pdfs
-
-        processed = process_new_pdfs()
-        logger.info("Processed %s new PDF(s)", processed)
-    except ImportError:
-        logger.warning("pipeline.process_new_pdfs not implemented yet")
+        from app.services.pipeline import process_all_pending
+        
+        # We start the multiprocessing pipeline as a separate process or blockingly run it
+        # Actually, process_all_pending uses multiprocessing pool.
+        logger.info("Starting pipeline processing for pending PDFs...")
+        process_all_pending()
+        logger.info("Pipeline processing step completed")
     except Exception:
         logger.exception("Error during PDF processing step")
 
     end_time = datetime.now()
     duration = (end_time - start_time).total_seconds()
     logger.info(
-        "Nightly USDA sync finished at %s (%.1fs) — downloaded=%s processed=%s total_added=%s",
+        "Nightly USDA sync finished at %s (%.1fs) — downloaded=%s",
         end_time.isoformat(),
         duration,
         downloaded,
-        processed,
-        downloaded + processed,
     )
 
 

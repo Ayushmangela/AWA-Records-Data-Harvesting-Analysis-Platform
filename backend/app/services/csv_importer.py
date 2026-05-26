@@ -154,6 +154,7 @@ def run_full_import():
             violation_count=violation_count,
             source_pdf=source_pdf,
             source_pdf_path=hash_id,
+            source_type="CSV_IMPORT",
         )
         db.add(inspection)
         db.flush()

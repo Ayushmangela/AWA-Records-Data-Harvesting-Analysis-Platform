@@ -57,6 +57,7 @@ class Inspection(Base):
     processing_status = Column(Enum(ProcessingStatus, native_enum=False), default=ProcessingStatus.PENDING, index=True)
     processed_at = Column(DateTime)
     error_reason = Column(Text)
+    source_type = Column(String, default="CSV_IMPORT")
 
     facility = relationship("Facility", back_populates="inspections")
     violations = relationship("Violation", back_populates="inspection")

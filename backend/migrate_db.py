@@ -11,6 +11,7 @@ def migrate():
         conn.execute(text("ALTER TABLE inspections ADD COLUMN IF NOT EXISTS processing_status VARCHAR(50);"))
         conn.execute(text("ALTER TABLE inspections ADD COLUMN IF NOT EXISTS processed_at TIMESTAMP;"))
         conn.execute(text("ALTER TABLE inspections ADD COLUMN IF NOT EXISTS error_reason TEXT;"))
+        conn.execute(text("ALTER TABLE inspections ADD COLUMN IF NOT EXISTS source_type VARCHAR(50) DEFAULT 'CSV_IMPORT';"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_inspections_processing_status ON inspections (processing_status);"))
         conn.execute(text("UPDATE inspections SET processing_status = 'completed' WHERE inspector_name IS NOT NULL AND processing_status IS NULL;"))
         conn.execute(text("UPDATE inspections SET processing_status = 'pending' WHERE processing_status IS NULL;"))
