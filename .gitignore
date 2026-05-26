@@ -21,6 +21,7 @@ frontend/dist/
 backend/data/raw_pdfs/
 backend/data/processed/
 backend/data/*.pdf
+backend/data/csv_exports/
 
 # Mac / editor junk
 .DS_Store

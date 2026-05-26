@@ -11,6 +11,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 import enum
+from datetime import datetime
 
 from app.database import Base
 
@@ -87,3 +88,13 @@ class Inventory(Base):
     source_pdf = Column(String)
 
     inspection = relationship("Inspection", back_populates="inventory")
+
+
+class AISummary(Base):
+    __tablename__ = 'ai_summaries'
+    id = Column(Integer, primary_key=True)
+    facility_id = Column(Integer, ForeignKey('facilities.id'))
+    summary_json = Column(Text)
+    generated_at = Column(DateTime, default=datetime.utcnow)
+    model_used = Column(String, default='llama-3.1-70b')
+    facility = relationship('Facility')

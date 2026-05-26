@@ -44,4 +44,14 @@ export async function getDashboardStats() {
   return data;
 }
 
+export async function generateAISummary(id) {
+  const { data } = await api.post(`/facilities/${id}/ai-summary`);
+  return data;
+}
+
+export async function generateLegalMemo(id) {
+  const { data } = await api.post(`/facilities/${id}/legal-memo`);
+  return data;
+}
+
 export default api;

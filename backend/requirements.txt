@@ -13,3 +13,4 @@ playwright
 python-dotenv
 apscheduler
 pydantic
+openai

@@ -311,3 +311,30 @@ def get_facility(facility_id: int, db: Session = Depends(get_db)):
         "risk_flags": risk_flags,
         "inspections": [_serialize_inspection(inspection) for inspection in inspections],
     }
+
+
+@router.post("/{facility_id}/ai-summary")
+def get_ai_summary(
+    facility_id: int,
+    db: Session = Depends(get_db)
+):
+    from app.services.ai_assistant import generate_facility_summary
+    result = generate_facility_summary(facility_id)
+    if 'error' in result:
+        raise HTTPException(
+            status_code=400,
+            detail=result['error'])
+    return result
+
+@router.post("/{facility_id}/legal-memo")
+def get_legal_memo(
+    facility_id: int,
+    db: Session = Depends(get_db)
+):
+    from app.services.ai_assistant import generate_legal_memo
+    result = generate_legal_memo(facility_id)
+    if 'error' in result:
+        raise HTTPException(
+            status_code=400,
+            detail=result['error'])
+    return result
