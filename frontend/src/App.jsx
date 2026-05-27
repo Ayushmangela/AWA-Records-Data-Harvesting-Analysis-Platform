@@ -3,25 +3,24 @@ import FacilityPage from "./pages/FacilityPage";
 import InspectorPage from "./pages/InspectorPage";
 import SearchPage from "./pages/SearchPage";
 import DashboardPage from "./pages/DashboardPage";
-import Navbar from "./components/Navbar";
+import DocumentReviewPage from "./pages/DocumentReviewPage";
+import Layout from "./components/Layout";
 import { ToastContainer } from "./components/Toast";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 
 export default function App() {
   return (
-    <div className="app">
-      <Navbar />
-      <div style={{ paddingTop: "64px" }}>
-        <ErrorBoundary>
-          <Routes>
-            <Route path="/" element={<SearchPage />} />
-            <Route path="/facility/:id" element={<FacilityPage />} />
-            <Route path="/inspector/:id" element={<InspectorPage />} />
-            <Route path="/dashboard" element={<DashboardPage />} />
-          </Routes>
-        </ErrorBoundary>
-      </div>
+    <Layout>
+      <ErrorBoundary>
+        <Routes>
+          <Route path="/" element={<DashboardPage />} />
+          <Route path="/search" element={<SearchPage />} />
+          <Route path="/facility/:id" element={<FacilityPage />} />
+          <Route path="/inspector/:id" element={<InspectorPage />} />
+          <Route path="/document-review" element={<DocumentReviewPage />} />
+        </Routes>
+      </ErrorBoundary>
       <ToastContainer />
-    </div>
+    </Layout>
   );
 }
