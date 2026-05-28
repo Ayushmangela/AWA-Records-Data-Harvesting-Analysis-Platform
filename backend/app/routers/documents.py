@@ -1,6 +1,8 @@
+import os
 import re
 from pathlib import Path
 
+import requests
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -36,6 +38,33 @@ async def proxy_pdf(inspection_id: int, db: Session = Depends(get_db)):
 
     if not local_path.is_relative_to(pdf_dir_resolved):
         raise HTTPException(status_code=403, detail="Path traversal blocked")
+
+    if not local_path.exists():
+        url = inspection.source_pdf
+        if not url or url.strip() == "" or url.strip() == "placeholder":
+            raise HTTPException(
+                status_code=404,
+                detail="PDF not available locally and has no source URL"
+            )
+
+        try:
+            pdf_dir_resolved.mkdir(parents=True, exist_ok=True)
+            ca_bundle = os.environ.get("AWA_CA_BUNDLE")
+            response = requests.get(
+                url,
+                headers={
+                    "User-Agent": "The Data Liberation Project (data-liberation-project.org)",
+                    "Accept": "*/*",
+                },
+                timeout=30,
+                verify=ca_bundle if ca_bundle else True,
+            )
+            response.raise_for_status()
+            if len(response.content) < 1000:
+                raise ValueError("Downloaded file too small")
+            local_path.write_bytes(response.content)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Failed to download PDF from source: {e}") from e
 
     if local_path.exists():
         return FileResponse(

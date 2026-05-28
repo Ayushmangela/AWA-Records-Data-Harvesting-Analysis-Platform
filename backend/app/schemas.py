@@ -132,9 +132,25 @@ class InspectorListOut(BaseModel):
     results: List[InspectorOut]
 
 
+class AISentence(BaseModel):
+    type: str
+    text: str
+    citation: str | None = None
+
+
 class AISummaryOut(BaseModel):
-    summary: str
+    facility_name: str
+    facility_id: int
+    generated_at: str
+    model: str
+    sentences: List[AISentence]
+    total_inspections: int
 
 
 class LegalMemoOut(BaseModel):
-    memo: str
+    facility_name: str
+    certificate: str | None = None
+    generated_at: str
+    memo_text: str
+    disclaimer: str
+

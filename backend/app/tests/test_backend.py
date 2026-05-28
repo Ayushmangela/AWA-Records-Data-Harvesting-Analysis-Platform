@@ -1,17 +1,16 @@
 import os
 from datetime import date, datetime, timezone
-import pytest
+
 import factory
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from app.database import get_db
 from app.main import app
 from app.models import Facility, Inspection, ProcessingStatus, Violation
 from app.services.pipeline import process_all_pending
 from app.services.risk_engine import calculate_facility_risk_flags, calculate_inspector_anomaly
 from app.tests.conftest import check_production_db
-
 
 # --- Factory Boy Setup ---
 

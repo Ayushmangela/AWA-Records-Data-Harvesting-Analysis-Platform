@@ -1,8 +1,10 @@
 import os
+
 import pytest
-from testcontainers.postgres import PostgresContainer
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from testcontainers.postgres import PostgresContainer
+
 from app.database import Base, get_db
 from app.main import app
 
