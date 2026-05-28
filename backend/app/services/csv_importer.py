@@ -1,9 +1,9 @@
-import time
-from datetime import datetime
-from pathlib import Path
-import pandas as pd
 import re
-from sqlalchemy.orm import Session
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pandas as pd
 
 from app.database import SessionLocal
 from app.models import Facility, Inspection, Violation
@@ -36,7 +36,9 @@ def run_full_import():
     db = SessionLocal()
     start_time = time.time()
 
-    csv_path = Path(__file__).resolve().parent.parent.parent / "data" / "csv_exports" / "inspections.csv"
+    csv_path = (
+        Path(__file__).resolve().parent.parent.parent / "data" / "csv_exports" / "inspections.csv"
+    )
     print(f"Reading CSV from {csv_path}...")
 
     df = pd.read_csv(csv_path)
@@ -51,13 +53,14 @@ def run_full_import():
     processed_count = 0
     imported_count = 0
 
-    cutoff_date = datetime.strptime("2021-01-01", "%Y-%m-%d").date()
+    cutoff_dt = datetime.strptime("2021-01-01", "%Y-%m-%d")  # noqa: DTZ007
+    cutoff_date = cutoff_dt.replace(tzinfo=timezone.utc).date()
 
     seen_hash_ids = set()
     seen_facility_dates = set()
 
     print("Starting import process...")
-    for idx, row in df.iterrows():
+    for _idx, row in df.iterrows():
         processed_count += 1
 
         # Parse inspection date
@@ -73,11 +76,13 @@ def run_full_import():
         insp_date = None
         for fmt in ("%Y-%m-%d", "%d-%b-%Y", "%m/%d/%Y", "%Y/%m/%d"):
             try:
-                insp_date = datetime.strptime(date_str, fmt).date()
+                parsed_dt = datetime.strptime(date_str, fmt)  # noqa: DTZ007
+                insp_date = parsed_dt.replace(tzinfo=timezone.utc).date()
                 break
             except ValueError:
                 try:
-                    insp_date = datetime.strptime(date_str[:10], fmt).date()
+                    parsed_dt = datetime.strptime(date_str[:10], fmt)  # noqa: DTZ007
+                    insp_date = parsed_dt.replace(tzinfo=timezone.utc).date()
                     break
                 except ValueError:
                     continue
@@ -102,7 +107,9 @@ def run_full_import():
                 if existing and existing.certificate_number != cert_num:
                     cust_id = None
 
-            name = _clean(row.get("pdf_customer_name")) or _clean(row.get("web_legalName")) or cert_num
+            name = (
+                _clean(row.get("pdf_customer_name")) or _clean(row.get("web_legalName")) or cert_num
+            )
             address = _clean(row.get("pdf_customer_addr"))
             city = _clean(row.get("web_city"))
             state = _clean(row.get("customer_state")) or _clean(row.get("web_state"))
@@ -129,7 +136,7 @@ def run_full_import():
         if hash_id and not HASH_RE.match(hash_id):
             print(f"Warning: Invalid hash_id '{hash_id}'. Skipping record.")
             continue
-            
+
         source_pdf = _clean(row.get("web_reportLink"))
 
         if hash_id and hash_id in seen_hash_ids:
@@ -170,40 +177,48 @@ def run_full_import():
         violation_source = hash_id or source_pdf
 
         if web_direct > 0:
-            db.add(Violation(
-                inspection_id=inspection.id,
-                severity="Direct",
-                section=None,
-                description=f"{web_direct} direct violations",
-                source_pdf=violation_source
-            ))
+            db.add(
+                Violation(
+                    inspection_id=inspection.id,
+                    severity="Direct",
+                    section=None,
+                    description=f"{web_direct} direct violations",
+                    source_pdf=violation_source,
+                )
+            )
 
         if web_critical > 0:
-            db.add(Violation(
-                inspection_id=inspection.id,
-                severity="Critical",
-                section=None,
-                description=f"{web_critical} critical violations",
-                source_pdf=violation_source
-            ))
+            db.add(
+                Violation(
+                    inspection_id=inspection.id,
+                    severity="Critical",
+                    section=None,
+                    description=f"{web_critical} critical violations",
+                    source_pdf=violation_source,
+                )
+            )
 
         if web_non_critical > 0:
-            db.add(Violation(
-                inspection_id=inspection.id,
-                severity="Indirect",
-                section=None,
-                description=f"{web_non_critical} non-critical violations",
-                source_pdf=violation_source
-            ))
+            db.add(
+                Violation(
+                    inspection_id=inspection.id,
+                    severity="Indirect",
+                    section=None,
+                    description=f"{web_non_critical} non-critical violations",
+                    source_pdf=violation_source,
+                )
+            )
 
         if web_teachable > 0:
-            db.add(Violation(
-                inspection_id=inspection.id,
-                severity="Teachable",
-                section=None,
-                description=f"{web_teachable} teachable moments",
-                source_pdf=violation_source
-            ))
+            db.add(
+                Violation(
+                    inspection_id=inspection.id,
+                    severity="Teachable",
+                    section=None,
+                    description=f"{web_teachable} teachable moments",
+                    source_pdf=violation_source,
+                )
+            )
 
         imported_count += 1
 
@@ -212,13 +227,19 @@ def run_full_import():
 
         if processed_count % 2000 == 0:
             elapsed = int(time.time() - start_time)
-            print(f"Imported {processed_count} records | Facilities: {len(facility_cache)} | Time: {elapsed}s")
+            print(
+                f"Imported {processed_count} records | "
+                f"Facilities: {len(facility_cache)} | Time: {elapsed}s"
+            )
 
     db.commit()
     db.close()
 
     elapsed = int(time.time() - start_time)
-    print(f"Finished full import. Processed {processed_count} total rows, imported {imported_count} inspections.")
+    print(
+        f"Finished full import. Processed {processed_count} total rows, "
+        f"imported {imported_count} inspections."
+    )
     print(f"Time taken: {elapsed}s")
 
 

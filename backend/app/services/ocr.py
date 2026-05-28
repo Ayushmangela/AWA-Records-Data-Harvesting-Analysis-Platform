@@ -5,7 +5,6 @@ from typing import Any, Dict
 import pdf2image
 import pdfplumber
 import pytesseract
-from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +48,9 @@ def extract_text_from_pdf(pdf_path: str | Path) -> Dict[str, Any]:
             result["success"] = True
             return result
     except Exception as e:
-        logger.warning("pdfplumber extraction failed for %s, falling back to Tesseract: %s", pdf_path, e)
+        logger.warning(
+            "pdfplumber extraction failed for %s, falling back to Tesseract: %s", pdf_path, e
+        )
 
     # 2. Fall back to Tesseract if pdfplumber returns empty or fails
     try:

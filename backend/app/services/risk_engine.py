@@ -1,21 +1,24 @@
 import logging
-from datetime import date, timedelta
-from sqlalchemy import desc, func, case
-from sqlalchemy.orm import Session
-from app.models import Facility, Inspection, Inventory, Violation
+from datetime import date, datetime, timezone
 
 from dateutil.relativedelta import relativedelta
+from sqlalchemy import case, desc, func
+from sqlalchemy.orm import Session
+
+from app.models import Facility, Inspection, Inventory, Violation
 
 logger = logging.getLogger(__name__)
+
 
 def cutoff_18_months_ago() -> date:
     """
     Returns the calendar-correct date 18 months prior to today.
-    Under USDA APHIS policy, receiving four or more inspection reports with 
-    direct/critical noncompliant items within an 18-month rolling window 
+    Under USDA APHIS policy, receiving four or more inspection reports with
+    direct/critical noncompliant items within an 18-month rolling window
     triggers heightened scrutiny and potential enforcement action.
     """
-    return date.today() - relativedelta(months=18)
+    return datetime.now(timezone.utc).date() - relativedelta(months=18)
+
 
 def calculate_facility_risk_flags(db: Session, facility_id: int) -> dict:
     """
@@ -53,9 +56,14 @@ def calculate_facility_risk_flags(db: Session, facility_id: int) -> dict:
             if inv_count > 0:
                 latest_inv_inspection = insp
                 break
-        
+
         if latest_inv_inspection:
-            total_animals = db.query(func.sum(Inventory.count)).filter(Inventory.inspection_id == latest_inv_inspection.id).scalar() or 0
+            total_animals = (
+                db.query(func.sum(Inventory.count))
+                .filter(Inventory.inspection_id == latest_inv_inspection.id)
+                .scalar()
+                or 0
+            )
             if total_animals > facility.licensed_animal_limit:
                 flags["exceeds_animal_limit"] = True
 
@@ -69,9 +77,10 @@ def calculate_facility_risk_flags(db: Session, facility_id: int) -> dict:
         .filter(
             Inspection.facility_id == facility_id,
             Inspection.inspection_date >= cutoff_date,
-            func.lower(Violation.severity).in_(["direct", "critical"])
+            func.lower(Violation.severity).in_(["direct", "critical"]),
         )
-        .scalar() or 0
+        .scalar()
+        or 0
     )
     if direct_viol_count > 3:
         flags["high_direct_violations"] = True
@@ -90,14 +99,25 @@ def calculate_facility_risk_flags(db: Session, facility_id: int) -> dict:
     if len(inspections_with_inv) >= 2:
         prev_insp = inspections_with_inv[-2]
         curr_insp = inspections_with_inv[-1]
-        
-        prev_total = db.query(func.sum(Inventory.count)).filter(Inventory.inspection_id == prev_insp.id).scalar() or 0
-        curr_total = db.query(func.sum(Inventory.count)).filter(Inventory.inspection_id == curr_insp.id).scalar() or 0
-        
+
+        prev_total = (
+            db.query(func.sum(Inventory.count))
+            .filter(Inventory.inspection_id == prev_insp.id)
+            .scalar()
+            or 0
+        )
+        curr_total = (
+            db.query(func.sum(Inventory.count))
+            .filter(Inventory.inspection_id == curr_insp.id)
+            .scalar()
+            or 0
+        )
+
         if prev_total > 0 and curr_total > prev_total * 3:
             flags["inventory_spike"] = True
 
     return flags
+
 
 def calculate_inspector_anomaly(db: Session, inspector_id: str) -> dict:
     """
@@ -110,7 +130,9 @@ def calculate_inspector_anomaly(db: Session, inspector_id: str) -> dict:
     stats = (
         db.query(
             func.count(Inspection.id).label("total"),
-            func.sum(case((Inspection.violations_found.is_(True), 1), else_=0)).label("with_violations")
+            func.sum(case((Inspection.violations_found.is_(True), 1), else_=0)).label(
+                "with_violations"
+            ),
         )
         .filter(Inspection.inspector_id == inspector_id)
         .one_or_none()
@@ -125,17 +147,14 @@ def calculate_inspector_anomaly(db: Session, inspector_id: str) -> dict:
             "non_compliance_rate": 0.0,
             "primary_state": None,
             "regional_average_rate": None,
-            "anomaly_flag": False
+            "anomaly_flag": False,
         }
 
     non_compliance_rate = round((with_violations / total_inspections) * 100, 2)
 
     # 2. Determine inspector's primary state (where they perform the most inspections)
     primary_state_row = (
-        db.query(
-            Facility.state,
-            func.count(Inspection.id).label("cnt")
-        )
+        db.query(Facility.state, func.count(Inspection.id).label("cnt"))
         .join(Inspection, Facility.id == Inspection.facility_id)
         .filter(Inspection.inspector_id == inspector_id, Facility.state.isnot(None))
         .group_by(Facility.state)
@@ -152,7 +171,9 @@ def calculate_inspector_anomaly(db: Session, inspector_id: str) -> dict:
         reg_stats = (
             db.query(
                 func.count(Inspection.id).label("total"),
-                func.sum(case((Inspection.violations_found.is_(True), 1), else_=0)).label("with_violations")
+                func.sum(case((Inspection.violations_found.is_(True), 1), else_=0)).label(
+                    "with_violations"
+                ),
             )
             .join(Facility, Facility.id == Inspection.facility_id)
             .filter(Facility.state.ilike(primary_state))
@@ -160,7 +181,9 @@ def calculate_inspector_anomaly(db: Session, inspector_id: str) -> dict:
         )
 
         reg_total = reg_stats.total if reg_stats else 0
-        reg_with_violations = reg_stats.with_violations if reg_stats and reg_stats.with_violations else 0
+        reg_with_violations = (
+            reg_stats.with_violations if reg_stats and reg_stats.with_violations else 0
+        )
 
         if reg_total > 0:
             regional_average_rate = round((reg_with_violations / reg_total) * 100, 2)
@@ -171,5 +194,5 @@ def calculate_inspector_anomaly(db: Session, inspector_id: str) -> dict:
         "non_compliance_rate": non_compliance_rate,
         "primary_state": primary_state,
         "regional_average_rate": regional_average_rate,
-        "anomaly_flag": anomaly_flag
+        "anomaly_flag": anomaly_flag,
     }

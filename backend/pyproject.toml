@@ -1,0 +1,25 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = ["alembic"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "S", "A", "C4", "PLC0415", "DTZ"]
+ignore = ["B008", "E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"app/tests/*" = ["S101"]
+
+
+[tool.black]
+line-length = 100
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    # Turn DeprecationWarnings from our own code into errors so regressions
+    # (e.g. re-introducing datetime.utcnow()) fail the build immediately.
+    "error::DeprecationWarning:app",
+    # Third-party libraries may emit DeprecationWarnings we cannot control;
+    # keep those as warnings, not errors.
+    "default::DeprecationWarning",
+]

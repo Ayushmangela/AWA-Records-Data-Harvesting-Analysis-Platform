@@ -1,75 +1,28 @@
-from datetime import date, timedelta
-
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import desc, func, or_, asc, select, tuple_
 import base64
 import json
-from sqlalchemy.orm import Session, joinedload
+import logging
+from datetime import date
 
-from app.database import get_db
-from app.models import Facility, Inspection, Inventory, Violation
-from app.services.risk_engine import calculate_facility_risk_flags, cutoff_18_months_ago
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import asc, desc, func, or_, select, tuple_
+from sqlalchemy.orm import Session, aliased, joinedload
+
 from app.auth import require_api_key
+from app.database import get_db
 from app.limiter import limiter
+from app.models import Facility, Inspection, Inventory, Violation
+from app.schemas import AISummaryOut, FacilityDetailOut, FacilityListOut, LegalMemoOut
+from app.services.ai_assistant import generate_facility_summary, generate_legal_memo
+from app.services.risk_engine import calculate_facility_risk_flags, cutoff_18_months_ago
 
-router = APIRouter(prefix="/facilities", tags=["facilities"], dependencies=[Depends(require_api_key)])
+logger = logging.getLogger(__name__)
 
-
-def _serialize_violation(violation: Violation) -> dict:
-    return {
-        "id": violation.id,
-        "severity": violation.severity,
-        "section": violation.section,
-        "description": violation.description,
-        "source_pdf": violation.source_pdf,
-        "source_page": violation.source_page,
-    }
+router = APIRouter(
+    prefix="/facilities", tags=["facilities"], dependencies=[Depends(require_api_key)]
+)
 
 
-def _serialize_inventory(item: Inventory) -> dict:
-    return {
-        "id": item.id,
-        "scientific_name": item.scientific_name,
-        "common_name": item.common_name,
-        "count": item.count,
-        "source_pdf": item.source_pdf,
-    }
-
-
-def _serialize_inspection(inspection: Inspection) -> dict:
-    return {
-        "id": inspection.id,
-        "inspection_date": inspection.inspection_date,
-        "inspection_type": inspection.inspection_type,
-        "inspector_name": inspection.inspector_name,
-        "inspector_id": inspection.inspector_id,
-        "violations_found": inspection.violations_found,
-        "violation_count": inspection.violation_count,
-        "source_pdf": inspection.source_pdf,
-        "source_pdf_path": inspection.source_pdf_path,
-        "violations": [_serialize_violation(v) for v in inspection.violations],
-        "inventory": [_serialize_inventory(i) for i in inspection.inventory],
-    }
-
-
-def _serialize_facility(facility: Facility) -> dict:
-    return {
-        "id": facility.id,
-        "name": facility.name,
-        "customer_id": facility.customer_id,
-        "certificate_number": facility.certificate_number,
-        "license_type": facility.license_type,
-        "license_status": facility.license_status,
-        "address": facility.address,
-        "city": facility.city,
-        "state": facility.state,
-        "zip_code": facility.zip_code,
-        "county": facility.county,
-        "licensed_animal_limit": facility.licensed_animal_limit,
-    }
-
-
-@router.get("")
+@router.get("", response_model=FacilityListOut)
 @limiter.limit("30/minute")
 def list_facilities(
     request: Request,
@@ -91,7 +44,13 @@ def list_facilities(
 ):
     # Prevent expensive leading wildcard sequential scans
     if any(term and len(term) < 3 for term in [name, license_type, species]):
-        return {"total": None, "limit": limit, "offset": offset, "results": [], "message": "Search terms must be at least 3 characters"}
+        return {
+            "total": None,
+            "limit": limit,
+            "offset": offset,
+            "results": [],
+            "message": "Search terms must be at least 3 characters",
+        }
 
     query = db.query(Facility)
 
@@ -125,7 +84,7 @@ def list_facilities(
                 .filter(
                     or_(
                         Inventory.scientific_name.ilike(f"%{species}%"),
-                        Inventory.common_name.ilike(f"%{species}%")
+                        Inventory.common_name.ilike(f"%{species}%"),
                     )
                 )
                 .distinct()
@@ -134,18 +93,25 @@ def list_facilities(
 
     # 1. exceeds_animal_limit filter
     if exceeds_animal_limit is not None:
-        latest_date_sub = db.query(
-            Inspection.facility_id,
-            func.max(Inspection.inspection_date).label("max_date")
-        ).group_by(Inspection.facility_id).subquery()
+        latest_date_sub = (
+            db.query(Inspection.facility_id, func.max(Inspection.inspection_date).label("max_date"))
+            .group_by(Inspection.facility_id)
+            .subquery()
+        )
 
-        exceeds_query = db.query(Facility.id)\
-            .join(latest_date_sub, Facility.id == latest_date_sub.c.facility_id)\
-            .join(Inspection, (Inspection.facility_id == Facility.id) & (Inspection.inspection_date == latest_date_sub.c.max_date))\
-            .join(Inventory, Inventory.inspection_id == Inspection.id)\
-            .group_by(Facility.id, Facility.licensed_animal_limit)\
+        exceeds_query = (
+            db.query(Facility.id)
+            .join(latest_date_sub, Facility.id == latest_date_sub.c.facility_id)
+            .join(
+                Inspection,
+                (Inspection.facility_id == Facility.id)
+                & (Inspection.inspection_date == latest_date_sub.c.max_date),
+            )
+            .join(Inventory, Inventory.inspection_id == Inspection.id)
+            .group_by(Facility.id, Facility.licensed_animal_limit)
             .having(func.sum(Inventory.count) > Facility.licensed_animal_limit)
-        
+        )
+
         if exceeds_animal_limit is True:
             query = query.filter(Facility.id.in_(exceeds_query))
         else:
@@ -154,14 +120,16 @@ def list_facilities(
     # 2. high_direct_violations filter
     if high_direct_violations is not None:
         cutoff_date = cutoff_18_months_ago()
-        high_direct_query = db.query(Inspection.facility_id)\
-            .join(Violation, Violation.inspection_id == Inspection.id)\
+        high_direct_query = (
+            db.query(Inspection.facility_id)
+            .join(Violation, Violation.inspection_id == Inspection.id)
             .filter(
                 Inspection.inspection_date >= cutoff_date,
-                func.lower(Violation.severity).in_(["direct", "critical"])
-            )\
-            .group_by(Inspection.facility_id)\
+                func.lower(Violation.severity).in_(["direct", "critical"]),
+            )
+            .group_by(Inspection.facility_id)
             .having(func.count(Violation.id) > 3)
+        )
 
         if high_direct_violations is True:
             query = query.filter(Facility.id.in_(high_direct_query))
@@ -170,29 +138,36 @@ def list_facilities(
 
     # 3. inventory_spike filter
     if inventory_spike is not None:
-        insp_inv_total = db.query(
-            Inspection.facility_id,
-            Inspection.id.label("inspection_id"),
-            Inspection.inspection_date,
-            func.sum(Inventory.count).label("inv_total")
-        ).join(Inventory, Inventory.inspection_id == Inspection.id)\
-         .group_by(Inspection.facility_id, Inspection.id, Inspection.inspection_date)\
-         .subquery()
+        insp_inv_total = (
+            db.query(
+                Inspection.facility_id,
+                Inspection.id.label("inspection_id"),
+                Inspection.inspection_date,
+                func.sum(Inventory.count).label("inv_total"),
+            )
+            .join(Inventory, Inventory.inspection_id == Inspection.id)
+            .group_by(Inspection.facility_id, Inspection.id, Inspection.inspection_date)
+            .subquery()
+        )
 
         prev_inv_total = db.query(
             insp_inv_total.c.facility_id,
             insp_inv_total.c.inv_total.label("curr_total"),
-            func.lag(insp_inv_total.c.inv_total).over(
-                partition_by=insp_inv_total.c.facility_id,
-                order_by=insp_inv_total.c.inspection_date
-            ).label("prev_total")
+            func.lag(insp_inv_total.c.inv_total)
+            .over(
+                partition_by=insp_inv_total.c.facility_id, order_by=insp_inv_total.c.inspection_date
+            )
+            .label("prev_total"),
         ).subquery()
 
-        spike_query = db.query(prev_inv_total.c.facility_id)\
+        spike_query = (
+            db.query(prev_inv_total.c.facility_id)
             .filter(
                 prev_inv_total.c.prev_total > 0,
-                prev_inv_total.c.curr_total > prev_inv_total.c.prev_total * 3
-            ).distinct()
+                prev_inv_total.c.curr_total > prev_inv_total.c.prev_total * 3,
+            )
+            .distinct()
+        )
 
         if inventory_spike is True:
             query = query.filter(Facility.id.in_(spike_query))
@@ -212,20 +187,14 @@ def list_facilities(
 
     # Subqueries for sorting
     violation_subquery = (
-        db.query(
-            Inspection.facility_id,
-            func.count(Violation.id).label("v_count")
-        )
+        db.query(Inspection.facility_id, func.count(Violation.id).label("v_count"))
         .join(Violation, Violation.inspection_id == Inspection.id)
         .group_by(Inspection.facility_id)
         .subquery()
     )
 
     latest_insp_subquery = (
-        db.query(
-            Inspection.facility_id,
-            func.max(Inspection.inspection_date).label("last_date")
-        )
+        db.query(Inspection.facility_id, func.max(Inspection.inspection_date).label("last_date"))
         .group_by(Inspection.facility_id)
         .subquery()
     )
@@ -241,9 +210,13 @@ def list_facilities(
     elif sort_by == "name_desc":
         query = query.order_by(desc(Facility.name), Facility.id)
     elif sort_by == "date_desc":
-        query = query.order_by(desc(func.coalesce(latest_insp_subquery.c.last_date, date(1970, 1, 1))), Facility.id)
+        query = query.order_by(
+            desc(func.coalesce(latest_insp_subquery.c.last_date, date(1970, 1, 1))), Facility.id
+        )
     elif sort_by == "date_asc":
-        query = query.order_by(asc(func.coalesce(latest_insp_subquery.c.last_date, date(1970, 1, 1))), Facility.id)
+        query = query.order_by(
+            asc(func.coalesce(latest_insp_subquery.c.last_date, date(1970, 1, 1))), Facility.id
+        )
     else:  # violations_desc
         query = query.order_by(desc(func.coalesce(violation_subquery.c.v_count, 0)), Facility.id)
 
@@ -252,41 +225,69 @@ def list_facilities(
     if include_total:
         cte = query.cte("filtered_facilities")
         total = db.execute(select(func.count()).select_from(cte)).scalar()
-        from sqlalchemy.orm import aliased
-        filtered_alias = aliased(Facility, cte)
-        # Re-apply ordering on the aliased entity because select_entity_from might lose it depending on SQLAlchemy version
-        # Actually it's safer to just let the main query execute with the same order_by and offset/limit
+        aliased(Facility, cte)
+        # Re-apply ordering on the aliased entity because select_entity_from
+        # might lose it depending on SQLAlchemy version
+        # Actually it's safer to just let the main query execute with the
+        # same order_by and offset/limit
         pass
 
     # Cursor Pagination Logic
-    is_heavy_query = exceeds_animal_limit is not None or high_direct_violations is not None or inventory_spike is not None or severity is not None
+    is_heavy_query = (
+        exceeds_animal_limit is not None
+        or high_direct_violations is not None
+        or inventory_spike is not None
+        or severity is not None
+    )
     next_cursor = None
 
     if is_heavy_query or cursor:
         if cursor:
             try:
-                decoded = json.loads(base64.b64decode(cursor).decode('utf-8'))
+                decoded = json.loads(base64.b64decode(cursor).decode("utf-8"))
                 cursor_val = decoded.get("val")
                 cursor_id = decoded.get("id")
-                
+
                 # Apply cursor filter
                 if sort_by == "violations_asc":
-                    query = query.filter(tuple_(func.coalesce(violation_subquery.c.v_count, 0), Facility.id) > tuple_(cursor_val, cursor_id))
+                    query = query.filter(
+                        tuple_(func.coalesce(violation_subquery.c.v_count, 0), Facility.id)
+                        > tuple_(cursor_val, cursor_id)
+                    )
                 elif sort_by == "name_asc":
-                    query = query.filter(tuple_(Facility.name, Facility.id) > tuple_(cursor_val, cursor_id))
+                    query = query.filter(
+                        tuple_(Facility.name, Facility.id) > tuple_(cursor_val, cursor_id)
+                    )
                 elif sort_by == "name_desc":
-                    query = query.filter(tuple_(Facility.name, Facility.id) < tuple_(cursor_val, cursor_id))
+                    query = query.filter(
+                        tuple_(Facility.name, Facility.id) < tuple_(cursor_val, cursor_id)
+                    )
                 elif sort_by == "date_desc":
                     cursor_val = date.fromisoformat(cursor_val) if cursor_val else date(1970, 1, 1)
-                    query = query.filter(tuple_(func.coalesce(latest_insp_subquery.c.last_date, date(1970, 1, 1)), Facility.id) < tuple_(cursor_val, cursor_id))
+                    query = query.filter(
+                        tuple_(
+                            func.coalesce(latest_insp_subquery.c.last_date, date(1970, 1, 1)),
+                            Facility.id,
+                        )
+                        < tuple_(cursor_val, cursor_id)
+                    )
                 elif sort_by == "date_asc":
                     cursor_val = date.fromisoformat(cursor_val) if cursor_val else date(1970, 1, 1)
-                    query = query.filter(tuple_(func.coalesce(latest_insp_subquery.c.last_date, date(1970, 1, 1)), Facility.id) > tuple_(cursor_val, cursor_id))
+                    query = query.filter(
+                        tuple_(
+                            func.coalesce(latest_insp_subquery.c.last_date, date(1970, 1, 1)),
+                            Facility.id,
+                        )
+                        > tuple_(cursor_val, cursor_id)
+                    )
                 else:  # violations_desc
-                    query = query.filter(tuple_(func.coalesce(violation_subquery.c.v_count, 0), Facility.id) < tuple_(cursor_val, cursor_id))
-            except Exception:
-                pass
-        
+                    query = query.filter(
+                        tuple_(func.coalesce(violation_subquery.c.v_count, 0), Facility.id)
+                        < tuple_(cursor_val, cursor_id)
+                    )
+            except Exception as e:
+                logger.warning("Failed to parse cursor: %s", e)
+
         # Use limit for cursor pagination (ignore offset)
         facilities = query.limit(limit).all()
     else:
@@ -324,14 +325,15 @@ def list_facilities(
     results = []
     for facility in facilities:
         stats = inspection_stats.get(facility.id)
-        results.append(
-            {
-                **_serialize_facility(facility),
-                "total_inspections": stats.total_inspections if stats else 0,
-                "total_violations": violation_stats.get(facility.id, 0),
-                "last_inspection_date": stats.last_inspection_date if stats else None,
-            }
-        )
+        # Because FacilityListItemOut uses from_attributes=True, we can pass a dict
+        # mixing the SQLAlchemy model and extra fields, and Pydantic will extract them.
+        item_dict = {
+            **facility.__dict__,
+            "total_inspections": stats.total_inspections if stats else 0,
+            "total_violations": violation_stats.get(facility.id, 0),
+            "last_inspection_date": stats.last_inspection_date if stats else None,
+        }
+        results.append(item_dict)
 
     if (is_heavy_query or cursor) and len(facilities) == limit:
         last_fac = facilities[-1]
@@ -344,19 +346,21 @@ def list_facilities(
         elif sort_by in ["date_asc", "date_desc"]:
             last_date = last_res["last_inspection_date"]
             val = last_date.isoformat() if last_date else None
-        
-        next_cursor = base64.b64encode(json.dumps({"val": val, "id": last_fac.id}).encode('utf-8')).decode('utf-8')
+
+        next_cursor = base64.b64encode(
+            json.dumps({"val": val, "id": last_fac.id}).encode("utf-8")
+        ).decode("utf-8")
 
     return {
         "total": total,
         "limit": limit,
         "offset": offset,
         "cursor": next_cursor,
-        "results": results
+        "results": results,
     }
 
 
-@router.get("/{facility_id}")
+@router.get("/{facility_id}", response_model=FacilityDetailOut)
 def get_facility(facility_id: int, db: Session = Depends(get_db)):
     facility = db.query(Facility).filter(Facility.id == facility_id).first()
     if facility is None:
@@ -376,38 +380,25 @@ def get_facility(facility_id: int, db: Session = Depends(get_db)):
     risk_flags = calculate_facility_risk_flags(db, facility_id)
 
     return {
-        **_serialize_facility(facility),
+        **facility.__dict__,
         "risk_flags": risk_flags,
-        "inspections": [_serialize_inspection(inspection) for inspection in inspections],
+        "inspections": inspections,
     }
 
 
-@router.post("/{facility_id}/ai-summary")
+@router.post("/{facility_id}/ai-summary", response_model=AISummaryOut)
 @limiter.limit("5/hour")
-def get_ai_summary(
-    facility_id: int,
-    request: Request,
-    db: Session = Depends(get_db)
-):
-    from app.services.ai_assistant import generate_facility_summary
+def get_ai_summary(facility_id: int, request: Request, db: Session = Depends(get_db)):
     result = generate_facility_summary(facility_id)
-    if 'error' in result:
-        raise HTTPException(
-            status_code=400,
-            detail=result['error'])
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
     return result
 
-@router.post("/{facility_id}/legal-memo")
+
+@router.post("/{facility_id}/legal-memo", response_model=LegalMemoOut)
 @limiter.limit("5/hour")
-def get_legal_memo(
-    facility_id: int,
-    request: Request,
-    db: Session = Depends(get_db)
-):
-    from app.services.ai_assistant import generate_legal_memo
+def get_legal_memo(facility_id: int, request: Request, db: Session = Depends(get_db)):
     result = generate_legal_memo(facility_id)
-    if 'error' in result:
-        raise HTTPException(
-            status_code=400,
-            detail=result['error'])
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
     return result

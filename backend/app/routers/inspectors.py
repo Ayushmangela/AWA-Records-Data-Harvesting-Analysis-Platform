@@ -2,31 +2,19 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import case, desc, func
 from sqlalchemy.orm import Session, joinedload
 
-from app.database import get_db
-from app.models import Facility, Inspection
-from app.services.risk_engine import calculate_inspector_anomaly
 from app.auth import require_api_key
+from app.database import get_db
 from app.limiter import limiter
+from app.models import Facility, Inspection
+from app.schemas import InspectorDetailOut, InspectorListOut
+from app.services.risk_engine import calculate_inspector_anomaly
 
-router = APIRouter(prefix="/inspectors", tags=["inspectors"], dependencies=[Depends(require_api_key)])
-
-
-def _serialize_inspection(inspection: Inspection) -> dict:
-    facility = inspection.facility
-    return {
-        "id": inspection.id,
-        "facility_id": inspection.facility_id,
-        "facility_name": facility.name if facility else None,
-        "facility_state": facility.state if facility else None,
-        "inspection_date": inspection.inspection_date,
-        "inspection_type": inspection.inspection_type,
-        "violations_found": inspection.violations_found,
-        "violation_count": inspection.violation_count,
-        "source_pdf": inspection.source_pdf,
-    }
+router = APIRouter(
+    prefix="/inspectors", tags=["inspectors"], dependencies=[Depends(require_api_key)]
+)
 
 
-@router.get("")
+@router.get("", response_model=InspectorListOut)
 @limiter.limit("60/minute")
 def list_inspectors(
     request: Request,
@@ -35,21 +23,18 @@ def list_inspectors(
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
-    violation_count = func.sum(
-        case((Inspection.violations_found.is_(True), 1), else_=0)
-    ).label("violations_found_count")
+    violation_count = func.sum(case((Inspection.violations_found.is_(True), 1), else_=0)).label(
+        "violations_found_count"
+    )
 
-    query = (
-        db.query(
-            Inspection.inspector_id,
-            func.max(Inspection.inspector_name).label("inspector_name"),
-            func.count(Inspection.id).label("total_inspections"),
-            violation_count,
-        )
-        .filter(
-            Inspection.inspector_id.isnot(None),
-            Inspection.inspector_id != "",
-        )
+    query = db.query(
+        Inspection.inspector_id,
+        func.max(Inspection.inspector_name).label("inspector_name"),
+        func.count(Inspection.id).label("total_inspections"),
+        violation_count,
+    ).filter(
+        Inspection.inspector_id.isnot(None),
+        Inspection.inspector_id != "",
     )
 
     if state:
@@ -59,8 +44,7 @@ def list_inspectors(
 
     # Calculate total distinct inspector_ids count
     total_query = db.query(Inspection.inspector_id).filter(
-        Inspection.inspector_id.isnot(None),
-        Inspection.inspector_id != ""
+        Inspection.inspector_id.isnot(None), Inspection.inspector_id != ""
     )
     if state:
         total_query = total_query.join(Facility, Facility.id == Inspection.facility_id).filter(
@@ -91,15 +75,10 @@ def list_inspectors(
             }
         )
 
-    return {
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-        "results": results
-    }
+    return {"total": total, "limit": limit, "offset": offset, "results": results}
 
 
-@router.get("/{inspector_id}")
+@router.get("/{inspector_id}", response_model=InspectorDetailOut)
 def get_inspector(inspector_id: str, db: Session = Depends(get_db)):
     inspections = (
         db.query(Inspection)
@@ -114,6 +93,17 @@ def get_inspector(inspector_id: str, db: Session = Depends(get_db)):
 
     anomaly_stats = calculate_inspector_anomaly(db, inspector_id)
 
+    inspections_out = []
+    for inspection in inspections:
+        facility = inspection.facility
+        inspections_out.append(
+            {
+                **inspection.__dict__,
+                "facility_name": facility.name if facility else None,
+                "facility_state": facility.state if facility else None,
+            }
+        )
+
     return {
         "inspector_id": inspector_id,
         "inspector_name": inspections[0].inspector_name or inspector_id,
@@ -122,5 +112,5 @@ def get_inspector(inspector_id: str, db: Session = Depends(get_db)):
         "non_compliance_rate": anomaly_stats["non_compliance_rate"],
         "regional_average_rate": anomaly_stats["regional_average_rate"],
         "anomaly_flag": anomaly_stats["anomaly_flag"],
-        "inspections": [_serialize_inspection(inspection) for inspection in inspections],
+        "inspections": inspections_out,
     }

@@ -1,13 +1,18 @@
-from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import desc, asc, func, select
-from sqlalchemy.orm import Session
 from datetime import date
-from app.database import get_db
-from app.models import Facility, Inspection, Violation
-from app.auth import require_api_key
-from app.limiter import limiter
 
-router = APIRouter(prefix="/violations", tags=["violations"], dependencies=[Depends(require_api_key)])
+from fastapi import APIRouter, Depends, Query, Request
+from sqlalchemy import asc, desc, func, select
+from sqlalchemy.orm import Session
+
+from app.auth import require_api_key
+from app.database import get_db
+from app.limiter import limiter
+from app.models import Facility, Inspection, Violation
+
+router = APIRouter(
+    prefix="/violations", tags=["violations"], dependencies=[Depends(require_api_key)]
+)
+
 
 @router.get("/search")
 @limiter.limit("30/minute")
@@ -24,26 +29,35 @@ def search_violations(
     limit: int = Query(20, ge=1, le=50),
     offset: int = Query(0, ge=0),
     include_total: bool = False,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     # Prevent expensive leading wildcard sequential scans
     if query and len(query) < 3:
-        return {"total": None, "limit": limit, "offset": offset, "results": [], "message": "Search terms must be at least 3 characters"}
+        return {
+            "total": None,
+            "limit": limit,
+            "offset": offset,
+            "results": [],
+            "message": "Search terms must be at least 3 characters",
+        }
 
-    db_query = db.query(
-        Violation.id,
-        Violation.severity,
-        Violation.section,
-        Violation.description,
-        Violation.source_pdf,
-        Violation.source_page,
-        Inspection.inspection_date,
-        Inspection.id.label("inspection_id"),
-        Facility.id.label("facility_id"),
-        Facility.name.label("facility_name"),
-        Facility.state.label("facility_state")
-    ).join(Inspection, Violation.inspection_id == Inspection.id)\
-     .join(Facility, Inspection.facility_id == Facility.id)
+    db_query = (
+        db.query(
+            Violation.id,
+            Violation.severity,
+            Violation.section,
+            Violation.description,
+            Violation.source_pdf,
+            Violation.source_page,
+            Inspection.inspection_date,
+            Inspection.id.label("inspection_id"),
+            Facility.id.label("facility_id"),
+            Facility.name.label("facility_name"),
+            Facility.state.label("facility_state"),
+        )
+        .join(Inspection, Violation.inspection_id == Inspection.id)
+        .join(Facility, Inspection.facility_id == Facility.id)
+    )
 
     if query:
         db_query = db_query.filter(Violation.description.ilike(f"%{query}%"))
@@ -71,7 +85,7 @@ def search_violations(
     if include_total:
         cte = db_query.cte("filtered_violations")
         total = db.execute(select(func.count()).select_from(cte)).scalar()
-        
+
     results = db_query.offset(offset).limit(limit).all()
 
     violations = [
@@ -86,14 +100,9 @@ def search_violations(
             "inspection_date": row.inspection_date,
             "facility_id": row.facility_id,
             "facility_name": row.facility_name,
-            "facility_state": row.facility_state
+            "facility_state": row.facility_state,
         }
         for row in results
     ]
 
-    return {
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-        "results": violations
-    }
+    return {"total": total, "limit": limit, "offset": offset, "results": violations}

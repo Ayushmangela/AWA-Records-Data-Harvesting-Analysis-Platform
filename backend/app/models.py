@@ -1,3 +1,6 @@
+import enum
+from datetime import datetime, timezone
+
 from sqlalchemy import (
     Boolean,
     Column,
@@ -10,10 +13,13 @@ from sqlalchemy import (
     Text,
 )
 from sqlalchemy.orm import relationship
-import enum
-from datetime import datetime
 
 from app.database import Base
+
+
+def _now_utc() -> datetime:
+    """Return a timezone-aware UTC datetime. Use as a column default callable."""
+    return datetime.now(timezone.utc)
 
 
 class ProcessingStatus(str, enum.Enum):
@@ -22,6 +28,8 @@ class ProcessingStatus(str, enum.Enum):
     COMPLETED = "completed"
     QUARANTINED = "quarantined"
     FAILED = "failed"
+
+
 class Facility(Base):
     __tablename__ = "facilities"
 
@@ -54,7 +62,9 @@ class Inspection(Base):
     violation_count = Column(Integer, default=0)
     source_pdf = Column(String)
     source_pdf_path = Column(String)
-    processing_status = Column(Enum(ProcessingStatus, native_enum=False), default=ProcessingStatus.PENDING, index=True)
+    processing_status = Column(
+        Enum(ProcessingStatus, native_enum=False), default=ProcessingStatus.PENDING, index=True
+    )
     processed_at = Column(DateTime)
     error_reason = Column(Text)
     source_type = Column(String, default="CSV_IMPORT")
@@ -92,19 +102,20 @@ class Inventory(Base):
 
 
 class AISummary(Base):
-    __tablename__ = 'ai_summaries'
+    __tablename__ = "ai_summaries"
     id = Column(Integer, primary_key=True)
-    facility_id = Column(Integer, ForeignKey('facilities.id'))
+    facility_id = Column(Integer, ForeignKey("facilities.id"))
     summary_json = Column(Text)
-    generated_at = Column(DateTime, default=datetime.utcnow)
-    model_used = Column(String, default='llama-3.1-70b')
-    facility = relationship('Facility')
+    generated_at = Column(DateTime(timezone=True), default=_now_utc)
+    model_used = Column(String, default="llama-3.1-70b")
+    facility = relationship("Facility")
+
 
 class LegalMemo(Base):
-    __tablename__ = 'legal_memos'
+    __tablename__ = "legal_memos"
     id = Column(Integer, primary_key=True)
-    facility_id = Column(Integer, ForeignKey('facilities.id'))
+    facility_id = Column(Integer, ForeignKey("facilities.id"))
     memo_text = Column(Text)
-    generated_at = Column(DateTime, default=datetime.utcnow)
-    model_used = Column(String, default='llama-3.3-70b-versatile')
-    facility = relationship('Facility')
+    generated_at = Column(DateTime(timezone=True), default=_now_utc)
+    model_used = Column(String, default="llama-3.3-70b-versatile")
+    facility = relationship("Facility")

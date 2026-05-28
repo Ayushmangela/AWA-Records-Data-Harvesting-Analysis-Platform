@@ -1,10 +1,11 @@
 import logging
 import re
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 import spacy
+
+from app.services.wordlist import TOP_1000_WORDS
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,8 @@ def _parse_extracted_date(date_str: str | None) -> Any:
     # E.g., 12-DEC-2023 or 2023-12-12
     for fmt in ("%d-%b-%Y", "%Y-%m-%d"):
         try:
-            return datetime.strptime(date_str, fmt).date()
+            parsed_dt = datetime.strptime(date_str, fmt)  # noqa: DTZ007
+            return parsed_dt.replace(tzinfo=timezone.utc).date()
         except ValueError:
             continue
     return date_str
@@ -33,7 +35,8 @@ def extract_data(text: str, filename: str) -> Dict[str, Any]:
 
     Returns a dictionary with:
     - facility: dict with name, customer_id, certificate_number, city, state
-    - inspection: dict with inspection_date, inspector_name, inspector_id, violations_found, violation_count
+    - inspection: dict with inspection_date, inspector_name, inspector_id,
+      violations_found, violation_count
     - violations: list of dicts with severity, section, description
     - inventory: list of dicts with count, scientific_name, common_name
     - source_pdf: filename
@@ -75,34 +78,20 @@ def extract_data(text: str, filename: str) -> Dict[str, Any]:
     if cust_match:
         facility["customer_id"] = cust_match.group(1)
 
-    # inspector_id: all caps code like EPANNILL
+    # inspector_id: all caps code like EPANNILL, rejecting common dictionary words
     inspector_id = None
-    insp_id_match = re.search(r"Inspector\s*(?:Name|ID)?:\s*([A-Z]{6,12})", text, re.IGNORECASE)
-    if insp_id_match:
-        inspector_id = insp_id_match.group(1)
-    else:
-        # Fallback to finding any uppercase word of length 6-12, avoiding keywords
-        for m in re.finditer(r"\b([A-Z]{6,12})\b", text):
-            word = m.group(1)
-            if word not in (
-                "CUSTOMER",
-                "FACILITY",
-                "INSPECTION",
-                "VIOLATION",
-                "DIRECT",
-                "INDIRECT",
-                "TEACHABLE",
-                "SPECIES",
-                "TOTAL",
-                "STATUS",
-                "ADDRESS",
-            ):
-                inspector_id = word
-                break
+    for insp_id_match in re.finditer(
+        r"(?:Inspector|Prepared\s+By)\s*(?:Name|ID)?:\s*([A-Z][A-Z0-9]{5,11})", text, re.IGNORECASE
+    ):
+        candidate_id = insp_id_match.group(1).upper()
+        if candidate_id not in TOP_1000_WORDS:
+            inspector_id = candidate_id
+            break
+
     inspection["inspector_id"] = inspector_id
 
     # animal count: number before word 'Total'
-    count_match = re.search(r"(\d+)\s+Total", text)
+    re.search(r"(\d+)\s+Total", text)
     # We can keep track of animal count if needed, but the main inventory list is built below
 
     # --- 2. spaCy Named Entity Recognition ---
@@ -140,7 +129,9 @@ def extract_data(text: str, filename: str) -> Dict[str, Any]:
     # --- 2.5 Robust Regex Fallbacks (essential for ALL-CAPS fields) ---
     if not inspection["inspector_name"]:
         # Match 'Prepared By: Name'
-        insp_name_match = re.search(r"Prepared\s+By:\s*([A-Za-z\s,.-]+?)(?=\s+Date:|\s+Title:|\n|$)", text, re.IGNORECASE)
+        insp_name_match = re.search(
+            r"Prepared\s+By:\s*([A-Za-z\s,.-]+?)(?=\s+Date:|\s+Title:|\n|$)", text, re.IGNORECASE
+        )
         if insp_name_match:
             inspection["inspector_name"] = insp_name_match.group(1).strip()
 
@@ -192,11 +183,13 @@ def extract_data(text: str, filename: str) -> Dict[str, Any]:
         description = text[start_desc:end_desc].strip()
         full_desc = f"{title}\n\n{description}" if description else title
 
-        violations.append({
-            "severity": severity,
-            "section": section,
-            "description": full_desc,
-        })
+        violations.append(
+            {
+                "severity": severity,
+                "section": section,
+                "description": full_desc,
+            }
+        )
 
     # --- 4. Inventory Extraction ---
     # Find pattern: number + scientific name + common name inside Species Inspected section
@@ -210,16 +203,20 @@ def extract_data(text: str, filename: str) -> Dict[str, Any]:
     else:
         species_section = text
 
-    inventory_pattern = r"\b(\d+)\s+([A-Z][a-z]+(?:\s+[a-z]+){1,2})\s+([A-Z][A-Z\s,()-]+)(?=\n|\r|$)"
+    inventory_pattern = (
+        r"\b(\d+)\s+([A-Z][a-z]+(?:\s+[a-z]+){1,2})\s+([A-Z][A-Z\s,()-]+)(?=\n|\r|$)"
+    )
     for match in re.finditer(inventory_pattern, species_section):
         count = int(match.group(1))
         sci_name = match.group(2).strip()
         common_name = match.group(3).strip()
-        inventory.append({
-            "count": count,
-            "scientific_name": sci_name,
-            "common_name": common_name,
-        })
+        inventory.append(
+            {
+                "count": count,
+                "scientific_name": sci_name,
+                "common_name": common_name,
+            }
+        )
 
     # Set violations found and count on inspection
     inspection["violations_found"] = len(violations) > 0
