@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { getFacility } from "../services/api";
 import PDFViewer from "../components/PDFViewer";
+import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
 
 function formatDate(value) {
   if (!value) return "—";
@@ -34,7 +35,7 @@ const mockFacilityData = {
       inspector_id: "insp_001",
       inspector_name: "Ashley Alger",
       violation_count: 1,
-      source_pdf: "https://dnxuxbmhaalwsyjmdbee.supabase.co/storage/v1/object/public/raw_pdfs/mock_pdf.pdf",
+      source_pdf: `${import.meta.env.VITE_SUPABASE_URL}/storage/v1/object/public/raw_pdfs/mock_pdf.pdf`,
       source_pdf_path: "44eba65f93ae0974.pdf",
       inventory: [
         { id: "inv_1", count: 2, common_name: "SERVAL", scientific_name: "Leptailurus serval" },
@@ -73,7 +74,7 @@ function InspectionAccordion({ inspection, onOpenPdf }) {
   
   let filename = inspection.source_pdf_path ? inspection.source_pdf_path.split('/').pop() : null;
   if (filename && !filename.endsWith('.pdf')) filename += '.pdf';
-  const pdfUrl = filename ? `https://dnxuxbmhaalwsyjmdbee.supabase.co/storage/v1/object/public/raw_pdfs/${filename}` : inspection.source_pdf;
+  const pdfUrl = filename ? `${import.meta.env.VITE_SUPABASE_URL}/storage/v1/object/public/raw_pdfs/${filename}` : inspection.source_pdf;
 
   return (
     <div className={`bg-surface-container-low border border-outline-variant/10 rounded-2xl overflow-hidden mb-6 flex`}>
@@ -92,7 +93,13 @@ function InspectionAccordion({ inspection, onOpenPdf }) {
           </div>
           <div>
             <p className="font-label-caps text-[10px] text-on-surface-variant uppercase tracking-widest mb-1">INSPECTOR</p>
-            <p className="font-code-data text-[13px] text-secondary font-bold uppercase">{inspection.inspector_name}</p>
+            {inspection.inspector_id ? (
+              <Link to={`/inspector/${inspection.inspector_id}`} className="font-code-data text-[13px] text-secondary font-bold uppercase hover:text-tertiary transition-colors no-underline">
+                {inspection.inspector_name || inspection.inspector_id}
+              </Link>
+            ) : (
+              <p className="font-code-data text-[13px] text-secondary font-bold uppercase">{inspection.inspector_name || "UNKNOWN"}</p>
+            )}
           </div>
           <div>
             <p className="font-label-caps text-[10px] text-on-surface-variant uppercase tracking-widest mb-1">VIOLATIONS</p>
@@ -255,6 +262,54 @@ export default function FacilityPage() {
               </div>
             </div>
           </div>
+
+          {/* Animal Inventory Trend Chart */}
+          {facility.inspections && facility.inspections.some(insp => insp.inventory && insp.inventory.length > 0) && (
+            <div className="mb-12">
+              <h2 className="font-headline-md text-[24px] font-bold text-on-surface mb-6">Animal Inventory Trend</h2>
+              <div className="bg-surface-container-lowest border border-outline-variant/10 rounded-2xl p-6 shadow-xl h-[300px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart
+                    data={[...facility.inspections].reverse().map(insp => ({
+                      date: new Date(insp.inspection_date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+                      count: insp.inventory ? insp.inventory.reduce((sum, item) => sum + item.count, 0) : 0
+                    }))}
+                    margin={{ top: 20, right: 30, left: 0, bottom: 0 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" vertical={false} />
+                    <XAxis 
+                      dataKey="date" 
+                      stroke="rgba(255,255,255,0.5)" 
+                      fontSize={11} 
+                      tickLine={false} 
+                      axisLine={false}
+                      dy={10}
+                    />
+                    <YAxis 
+                      stroke="rgba(255,255,255,0.5)" 
+                      fontSize={11} 
+                      tickLine={false} 
+                      axisLine={false}
+                      dx={-10}
+                    />
+                    <Tooltip 
+                      contentStyle={{ backgroundColor: '#064e3b', borderColor: 'rgba(255,255,255,0.2)', borderRadius: '8px', color: '#fff', fontSize: '12px' }}
+                      itemStyle={{ color: '#fff', fontWeight: 'bold' }}
+                    />
+                    <Line 
+                      type="monotone" 
+                      dataKey="count" 
+                      name="Animals"
+                      stroke="#e9c349" 
+                      strokeWidth={3} 
+                      dot={{ r: 4, fill: '#e9c349', strokeWidth: 2, stroke: '#1a1c19' }} 
+                      activeDot={{ r: 6, fill: '#fff', stroke: '#e9c349' }} 
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
 
           {/* Warning Banner */}
           {facility.risk_flags?.high_direct_violations && (
