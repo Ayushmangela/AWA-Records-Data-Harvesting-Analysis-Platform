@@ -99,3 +99,12 @@ class AISummary(Base):
     generated_at = Column(DateTime, default=datetime.utcnow)
     model_used = Column(String, default='llama-3.1-70b')
     facility = relationship('Facility')
+
+class LegalMemo(Base):
+    __tablename__ = 'legal_memos'
+    id = Column(Integer, primary_key=True)
+    facility_id = Column(Integer, ForeignKey('facilities.id'))
+    memo_text = Column(Text)
+    generated_at = Column(DateTime, default=datetime.utcnow)
+    model_used = Column(String, default='llama-3.3-70b-versatile')
+    facility = relationship('Facility')

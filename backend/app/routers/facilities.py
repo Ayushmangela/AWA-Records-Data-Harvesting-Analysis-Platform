@@ -1,14 +1,18 @@
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import desc, func, or_, asc
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import desc, func, or_, asc, select, tuple_
+import base64
+import json
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
 from app.models import Facility, Inspection, Inventory, Violation
-from app.services.risk_engine import calculate_facility_risk_flags
+from app.services.risk_engine import calculate_facility_risk_flags, cutoff_18_months_ago
+from app.auth import require_api_key
+from app.limiter import limiter
 
-router = APIRouter(prefix="/facilities", tags=["facilities"])
+router = APIRouter(prefix="/facilities", tags=["facilities"], dependencies=[Depends(require_api_key)])
 
 
 def _serialize_violation(violation: Violation) -> dict:
@@ -66,7 +70,9 @@ def _serialize_facility(facility: Facility) -> dict:
 
 
 @router.get("")
+@limiter.limit("30/minute")
 def list_facilities(
+    request: Request,
     name: str | None = None,
     state: str | None = None,
     license_type: str | None = None,
@@ -77,10 +83,16 @@ def list_facilities(
     inventory_spike: bool | None = None,
     severity: str | None = None,
     sort_by: str = "violations_desc",
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(20, ge=1, le=50),
     offset: int = Query(0, ge=0),
+    cursor: str | None = None,
+    include_total: bool = False,
     db: Session = Depends(get_db),
 ):
+    # Prevent expensive leading wildcard sequential scans
+    if any(term and len(term) < 3 for term in [name, license_type, species]):
+        return {"total": None, "limit": limit, "offset": offset, "results": [], "message": "Search terms must be at least 3 characters"}
+
     query = db.query(Facility)
 
     if name:
@@ -141,7 +153,7 @@ def list_facilities(
 
     # 2. high_direct_violations filter
     if high_direct_violations is not None:
-        cutoff_date = date.today() - timedelta(days=18 * 30)
+        cutoff_date = cutoff_18_months_ago()
         high_direct_query = db.query(Inspection.facility_id)\
             .join(Violation, Violation.inspection_id == Inspection.id)\
             .filter(
@@ -235,8 +247,50 @@ def list_facilities(
     else:  # violations_desc
         query = query.order_by(desc(func.coalesce(violation_subquery.c.v_count, 0)), Facility.id)
 
-    total = query.count()
-    facilities = query.offset(offset).limit(limit).all()
+    # Opt-in total count via CTE
+    total = None
+    if include_total:
+        cte = query.cte("filtered_facilities")
+        total = db.execute(select(func.count()).select_from(cte)).scalar()
+        from sqlalchemy.orm import aliased
+        filtered_alias = aliased(Facility, cte)
+        # Re-apply ordering on the aliased entity because select_entity_from might lose it depending on SQLAlchemy version
+        # Actually it's safer to just let the main query execute with the same order_by and offset/limit
+        pass
+
+    # Cursor Pagination Logic
+    is_heavy_query = exceeds_animal_limit is not None or high_direct_violations is not None or inventory_spike is not None or severity is not None
+    next_cursor = None
+
+    if is_heavy_query or cursor:
+        if cursor:
+            try:
+                decoded = json.loads(base64.b64decode(cursor).decode('utf-8'))
+                cursor_val = decoded.get("val")
+                cursor_id = decoded.get("id")
+                
+                # Apply cursor filter
+                if sort_by == "violations_asc":
+                    query = query.filter(tuple_(func.coalesce(violation_subquery.c.v_count, 0), Facility.id) > tuple_(cursor_val, cursor_id))
+                elif sort_by == "name_asc":
+                    query = query.filter(tuple_(Facility.name, Facility.id) > tuple_(cursor_val, cursor_id))
+                elif sort_by == "name_desc":
+                    query = query.filter(tuple_(Facility.name, Facility.id) < tuple_(cursor_val, cursor_id))
+                elif sort_by == "date_desc":
+                    cursor_val = date.fromisoformat(cursor_val) if cursor_val else date(1970, 1, 1)
+                    query = query.filter(tuple_(func.coalesce(latest_insp_subquery.c.last_date, date(1970, 1, 1)), Facility.id) < tuple_(cursor_val, cursor_id))
+                elif sort_by == "date_asc":
+                    cursor_val = date.fromisoformat(cursor_val) if cursor_val else date(1970, 1, 1)
+                    query = query.filter(tuple_(func.coalesce(latest_insp_subquery.c.last_date, date(1970, 1, 1)), Facility.id) > tuple_(cursor_val, cursor_id))
+                else:  # violations_desc
+                    query = query.filter(tuple_(func.coalesce(violation_subquery.c.v_count, 0), Facility.id) < tuple_(cursor_val, cursor_id))
+            except Exception:
+                pass
+        
+        # Use limit for cursor pagination (ignore offset)
+        facilities = query.limit(limit).all()
+    else:
+        facilities = query.offset(offset).limit(limit).all()
 
     if not facilities:
         return {"total": 0, "limit": limit, "offset": offset, "results": []}
@@ -279,10 +333,25 @@ def list_facilities(
             }
         )
 
+    if (is_heavy_query or cursor) and len(facilities) == limit:
+        last_fac = facilities[-1]
+        last_res = results[-1]
+        val = None
+        if sort_by in ["violations_asc", "violations_desc"]:
+            val = last_res["total_violations"]
+        elif sort_by in ["name_asc", "name_desc"]:
+            val = last_res["name"]
+        elif sort_by in ["date_asc", "date_desc"]:
+            last_date = last_res["last_inspection_date"]
+            val = last_date.isoformat() if last_date else None
+        
+        next_cursor = base64.b64encode(json.dumps({"val": val, "id": last_fac.id}).encode('utf-8')).decode('utf-8')
+
     return {
         "total": total,
         "limit": limit,
         "offset": offset,
+        "cursor": next_cursor,
         "results": results
     }
 
@@ -314,8 +383,10 @@ def get_facility(facility_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{facility_id}/ai-summary")
+@limiter.limit("5/hour")
 def get_ai_summary(
     facility_id: int,
+    request: Request,
     db: Session = Depends(get_db)
 ):
     from app.services.ai_assistant import generate_facility_summary
@@ -327,8 +398,10 @@ def get_ai_summary(
     return result
 
 @router.post("/{facility_id}/legal-memo")
+@limiter.limit("5/hour")
 def get_legal_memo(
     facility_id: int,
+    request: Request,
     db: Session = Depends(get_db)
 ):
     from app.services.ai_assistant import generate_legal_memo

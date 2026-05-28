@@ -3,6 +3,9 @@ import time
 import json
 import logging
 import hashlib
+import re
+import requests
+import concurrent.futures
 from datetime import datetime, date
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -20,6 +23,8 @@ logger = logging.getLogger(__name__)
 HEADLESS = os.environ.get("HEADLESS", "True").lower() == "true"
 BASE_URL = "https://aphis.my.site.com/PublicSearchTool/s/inspection-reports"
 
+HASH_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
+
 def generate_hash_id(url: str) -> str:
     """Generate a unique hash for the PDF from its URL or query params."""
     parsed = urlparse(url)
@@ -31,6 +36,26 @@ def generate_hash_id(url: str) -> str:
         return hashlib.md5((qs["oid"][0] + qs["d"][0]).encode()).hexdigest()
         
     return hashlib.md5(url.encode()).hexdigest()
+
+def _download_with_retry(url: str, retries: int = 3, timeout: int = 30) -> bytes | None:
+    ca_bundle = os.environ.get("AWA_CA_BUNDLE")
+    for attempt in range(1, retries + 1):
+        try:
+            resp = requests.get(
+                url,
+                headers={"User-Agent": "AWA-Records-Platform"},
+                timeout=timeout,
+                verify=ca_bundle if ca_bundle else True,
+            )
+            resp.raise_for_status()
+            if len(resp.content) < 1000:
+                raise ValueError("Response too small to be a real PDF")
+            return resp.content
+        except Exception as e:
+            logger.warning("Attempt %s for %s failed: %s", attempt, url, e)
+            if attempt < retries:
+                time.sleep(attempt * 2)
+    return None
 
 def scrape_state(state_code: str = "TX", license_type: str = "BREEDER", max_pages: int = 10) -> int:
     """
@@ -141,6 +166,9 @@ def scrape_state(state_code: str = "TX", license_type: str = "BREEDER", max_page
             pdf_link = r.get("reportLink", "")
             if pdf_link:
                 hash_id = generate_hash_id(pdf_link)
+                if not HASH_RE.match(hash_id):
+                    logger.warning(f"Invalid hash generated: {hash_id}. Skipping record.")
+                    continue
                 unique_records[hash_id] = r
                 
         logger.info(f"Finished interception. Processing {len(unique_records)} unique valid records.")
@@ -200,14 +228,13 @@ def scrape_state(state_code: str = "TX", license_type: str = "BREEDER", max_page
                     
                 filepath = pdf_dir / f"{hash_id}.pdf"
                 if not filepath.exists():
-                    import requests
                     logger.info(f"Downloading PDF: {hash_id}.pdf")
-                    resp = requests.get(pdf_link)
-                    if resp.status_code == 200:
-                        filepath.write_bytes(resp.content)
+                    content = _download_with_retry(pdf_link)
+                    if content is not None:
+                        filepath.write_bytes(content)
                         time.sleep(1) # Throttle downloads
                     else:
-                        logger.error(f"Failed to download {pdf_link}: {resp.status_code}")
+                        logger.error(f"Failed to download {pdf_link}")
                         continue
                 
                 inspection = Inspection(
@@ -237,7 +264,15 @@ def check_and_download_new_pdfs():
     """Wrapper for the scheduler to trigger the sync across priority states."""
     total_downloaded = 0
     for state in ["TX"]:
-        total_downloaded += scrape_state(state_code=state, license_type="BREEDER")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(scrape_state, state_code=state, license_type="BREEDER")
+            try:
+                # 30 minutes overall timeout for this state's scrape
+                total_downloaded += future.result(timeout=1800)
+            except concurrent.futures.TimeoutError:
+                logger.error("Scraper timed out after 30 minutes for state %s", state)
+            except Exception as e:
+                logger.exception("Scraper failed for state %s: %s", state, e)
     return total_downloaded
 
 if __name__ == "__main__":

@@ -11,37 +11,50 @@ scheduler = BackgroundScheduler()
 
 def nightly_sync_job():
     """Check USDA for new records, download PDFs, and process them."""
-    start_time = datetime.now()
-    logger.info("Nightly USDA sync started at %s", start_time.isoformat())
+    import concurrent.futures
 
-    downloaded = 0
+    def _run_sync():
+        start_time = datetime.now()
+        logger.info("Nightly USDA sync started at %s", start_time.isoformat())
 
-    try:
-        from app.services.scraper import check_and_download_new_pdfs
-        downloaded = check_and_download_new_pdfs()
-    except Exception:
-        logger.exception("Error during PDF download step")
         downloaded = 0
 
-    try:
-        from app.services.pipeline import process_all_pending
-        
-        # We start the multiprocessing pipeline as a separate process or blockingly run it
-        # Actually, process_all_pending uses multiprocessing pool.
-        logger.info("Starting pipeline processing for pending PDFs...")
-        process_all_pending()
-        logger.info("Pipeline processing step completed")
-    except Exception:
-        logger.exception("Error during PDF processing step")
+        try:
+            from app.services.scraper import check_and_download_new_pdfs
+            downloaded = check_and_download_new_pdfs()
+        except Exception:
+            logger.exception("Error during PDF download step")
+            downloaded = 0
 
-    end_time = datetime.now()
-    duration = (end_time - start_time).total_seconds()
-    logger.info(
-        "Nightly USDA sync finished at %s (%.1fs) — downloaded=%s",
-        end_time.isoformat(),
-        duration,
-        downloaded,
-    )
+        try:
+            from app.services.pipeline import process_all_pending
+            
+            # We start the multiprocessing pipeline as a separate process or blockingly run it
+            # Actually, process_all_pending uses multiprocessing pool.
+            logger.info("Starting pipeline processing for pending PDFs...")
+            process_all_pending()
+            logger.info("Pipeline processing step completed")
+        except Exception:
+            logger.exception("Error during PDF processing step")
+
+        end_time = datetime.now()
+        duration = (end_time - start_time).total_seconds()
+        logger.info(
+            "Nightly USDA sync finished at %s (%.1fs) — downloaded=%s",
+            end_time.isoformat(),
+            duration,
+            downloaded,
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_run_sync)
+        try:
+            # 1 hour overall job timeout to prevent blocked subsequent runs
+            future.result(timeout=3600)
+        except concurrent.futures.TimeoutError:
+            logger.error("Nightly sync job timed out after 1 hour.")
+        except Exception as e:
+            logger.error("Nightly sync job failed with exception: %s", e)
 
 
 def start_scheduler():

@@ -4,8 +4,10 @@ from sqlalchemy.orm import Session
 from datetime import date, timedelta
 from app.database import get_db
 from app.models import Facility, Inspection, Inventory, Violation
+from app.services.risk_engine import cutoff_18_months_ago
+from app.auth import require_api_key
 
-router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+router = APIRouter(prefix="/dashboard", tags=["dashboard"], dependencies=[Depends(require_api_key)])
 
 @router.get("/stats")
 def get_dashboard_stats(db: Session = Depends(get_db)):
@@ -89,7 +91,7 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
         .count()
 
     # 7. Flag C count (Frequent direct violations in last 18 months)
-    cutoff_date = date.today() - timedelta(days=18 * 30)
+    cutoff_date = cutoff_18_months_ago()
     flag_c_count = db.query(Inspection.facility_id)\
         .join(Violation, Violation.inspection_id == Inspection.id)\
         .filter(

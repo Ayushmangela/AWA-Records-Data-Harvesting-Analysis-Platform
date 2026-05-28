@@ -4,7 +4,18 @@ from sqlalchemy import desc, func, case
 from sqlalchemy.orm import Session
 from app.models import Facility, Inspection, Inventory, Violation
 
+from dateutil.relativedelta import relativedelta
+
 logger = logging.getLogger(__name__)
+
+def cutoff_18_months_ago() -> date:
+    """
+    Returns the calendar-correct date 18 months prior to today.
+    Under USDA APHIS policy, receiving four or more inspection reports with 
+    direct/critical noncompliant items within an 18-month rolling window 
+    triggers heightened scrutiny and potential enforcement action.
+    """
+    return date.today() - relativedelta(months=18)
 
 def calculate_facility_risk_flags(db: Session, facility_id: int) -> dict:
     """
@@ -49,8 +60,8 @@ def calculate_facility_risk_flags(db: Session, facility_id: int) -> dict:
                 flags["exceeds_animal_limit"] = True
 
     # 2. high_direct_violations
-    # 18 months rolling window from today
-    cutoff_date = date.today() - timedelta(days=18 * 30)
+    # 18 months rolling window from today (regulatory timeframe for persistent noncompliance)
+    cutoff_date = cutoff_18_months_ago()
     # Query count of violations with Direct or Critical severity in last 18 months for this facility
     direct_viol_count = (
         db.query(func.count(Violation.id))

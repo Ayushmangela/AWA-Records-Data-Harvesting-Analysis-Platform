@@ -7,9 +7,9 @@ from typing import Any, Dict
 import queue
 import threading
 import multiprocessing
+import os
 
 import requests
-import urllib3
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
@@ -19,9 +19,6 @@ from app.services.extractor import extract_data
 from app.services.ocr import extract_text_from_pdf
 
 logger = logging.getLogger(__name__)
-
-# Disable SSL verification warnings for USDA downloads
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Global lock for thread-safe console printing
 print_lock = threading.Lock()
@@ -72,14 +69,15 @@ def download_inspection_pdf(inspection_id: int, db: Session, verbose: bool = Tru
     retries = 3
     for attempt in range(1, retries + 1):
         try:
+            ca_bundle = os.environ.get("AWA_CA_BUNDLE")
             response = requests.get(
                 url,
                 headers={
                     "User-Agent": "The Data Liberation Project (data-liberation-project.org)",
                     "Accept": "*/*",
                 },
-                timeout=15,
-                verify=False,
+                timeout=30,
+                verify=ca_bundle if ca_bundle else True,
             )
             response.raise_for_status()
 
@@ -265,11 +263,16 @@ def process_batch(limit: int = 100, offset: int = 0) -> Dict[str, int]:
 
 
 
-def worker_process(inspection_id: int):
+def worker_process(inspection_id: int, status_queue):
     # This runs in a separate process
+    from app.database import engine
+    engine.dispose(close=False)
     db = SessionLocal()
     try:
-        process_single_inspection(inspection_id, db)
+        success = process_single_inspection(inspection_id, db)
+        status_queue.put((inspection_id, "success" if success else "failed", None))
+    except Exception as e:
+        status_queue.put((inspection_id, "failed", str(e)))
     finally:
         db.close()
 
@@ -313,6 +316,8 @@ def process_all_pending():
         print("No pending inspections to process.")
         return
 
+    ctx = multiprocessing.get_context("spawn")
+    status_queue = ctx.Queue()
     max_workers = 4  # Limit CPU intensive OCR processes
     timeout_seconds = 180  # 3 minute timeout per PDF
     
@@ -332,6 +337,17 @@ def process_all_pending():
             completed_pids = []
             now = time.time()
             
+            # Drain status_queue
+            while not status_queue.empty():
+                try:
+                    insp_id, status, error = status_queue.get_nowait()
+                    if status == "success":
+                        success_count += 1
+                    else:
+                        failed_count += 1
+                except queue.Empty:
+                    break
+            
             for pid, info in list(active_workers.items()):
                 p = info["process"]
                 insp_id = info["id"]
@@ -340,29 +356,23 @@ def process_all_pending():
                     # Process finished naturally
                     completed_pids.append(pid)
                     processed_count += 1
-                    # DB state should have been updated by worker
-                    insp = db.query(Inspection).filter(Inspection.id == insp_id).first()
-                    if insp:
-                        if insp.processing_status == ProcessingStatus.COMPLETED:
-                            success_count += 1
-                        else:
-                            failed_count += 1
                 elif now - info["start_time"] > timeout_seconds:
                     # Stall detected!
                     print(f"\n[WATCHDOG] STALL DETECTED for inspection {insp_id}! Killing worker pid {pid}...")
                     logger.error("[WATCHDOG] Killing worker pid %s for inspection %s", pid, insp_id)
-                    p.terminate()
-                    p.join(timeout=2)
-                    if p.is_alive():
-                        p.kill()
                         
-                    # Update DB to quarantined
+                    # Update DB to quarantined BEFORE terminating the process
                     insp = db.query(Inspection).filter(Inspection.id == insp_id).first()
                     if insp:
                         insp.processing_status = ProcessingStatus.QUARANTINED
                         insp.error_reason = "Worker timed out (stalled during OCR/NLP)"
                         insp.processed_at = dt_class.now()
                         db.commit()
+                        
+                    p.terminate()
+                    p.join(timeout=5)
+                    if p.is_alive():
+                        p.kill()
                         
                     completed_pids.append(pid)
                     processed_count += 1
@@ -380,7 +390,7 @@ def process_all_pending():
                     insp.processing_status = ProcessingStatus.PROCESSING
                     db.commit()
                     
-                p = multiprocessing.Process(target=worker_process, args=(next_id,))
+                p = ctx.Process(target=worker_process, args=(next_id, status_queue))
                 p.start()
                 active_workers[p.pid] = {
                     "process": p,

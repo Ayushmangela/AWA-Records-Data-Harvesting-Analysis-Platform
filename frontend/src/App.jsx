@@ -4,6 +4,7 @@ import InspectorPage from "./pages/InspectorPage";
 import SearchPage from "./pages/SearchPage";
 import DashboardPage from "./pages/DashboardPage";
 import DocumentReviewPage from "./pages/DocumentReviewPage";
+import InspectorsDirectoryPage from "./pages/InspectorsDirectoryPage";
 import Layout from "./components/Layout";
 import { ToastContainer } from "./components/Toast";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -16,6 +17,7 @@ export default function App() {
           <Route path="/" element={<DashboardPage />} />
           <Route path="/search" element={<SearchPage />} />
           <Route path="/facility/:id" element={<FacilityPage />} />
+          <Route path="/inspectors" element={<InspectorsDirectoryPage />} />
           <Route path="/inspector/:id" element={<InspectorPage />} />
           <Route path="/document-review" element={<DocumentReviewPage />} />
         </Routes>

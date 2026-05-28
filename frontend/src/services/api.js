@@ -4,6 +4,13 @@ const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || "http://localhost:8000",
 });
 
+api.interceptors.request.use(config => {
+  if (import.meta.env.VITE_API_KEY) {
+    config.headers["X-API-Key"] = import.meta.env.VITE_API_KEY;
+  }
+  return config;
+});
+
 export async function searchFacilities(params = {}) {
   const query = {};
   if (params.name) query.name = params.name;
@@ -16,6 +23,8 @@ export async function searchFacilities(params = {}) {
   if (params.sort_by) query.sort_by = params.sort_by;
   if (params.offset !== undefined) query.offset = params.offset;
   if (params.limit !== undefined) query.limit = params.limit;
+  if (params.cursor) query.cursor = params.cursor;
+  if (params.include_total !== undefined) query.include_total = params.include_total;
 
   const { data } = await api.get("/facilities", { params: query });
   return data;

@@ -25,6 +25,10 @@ export default function Layout({ children }) {
             <span className="material-symbols-outlined">search</span>
             <span className="font-label-caps text-label-caps uppercase">Search</span>
           </Link>
+          <Link to="/inspectors" className={`flex items-center gap-3 rounded-lg px-4 py-3 transition-all active:scale-95 ${location.pathname.startsWith('/inspector') ? 'bg-primary-container text-on-primary-container' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/30'}`}>
+            <span className="material-symbols-outlined">group</span>
+            <span className="font-label-caps text-label-caps uppercase">Inspectors</span>
+          </Link>
           <Link to="/search" className={`flex items-center gap-3 rounded-lg px-4 py-3 transition-all active:scale-95 ${location.pathname.startsWith('/search') || location.pathname.startsWith('/facility') ? 'bg-primary-container text-on-primary-container' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/30'}`}>
             <span className="material-symbols-outlined">folder_managed</span>
             <span className="font-label-caps text-label-caps uppercase">Cases</span>

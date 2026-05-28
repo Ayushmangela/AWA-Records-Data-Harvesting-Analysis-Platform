@@ -1,14 +1,18 @@
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy import desc, asc
+from fastapi import APIRouter, Depends, Query, Request
+from sqlalchemy import desc, asc, func, select
 from sqlalchemy.orm import Session
 from datetime import date
 from app.database import get_db
 from app.models import Facility, Inspection, Violation
+from app.auth import require_api_key
+from app.limiter import limiter
 
-router = APIRouter(prefix="/violations", tags=["violations"])
+router = APIRouter(prefix="/violations", tags=["violations"], dependencies=[Depends(require_api_key)])
 
 @router.get("/search")
+@limiter.limit("30/minute")
 def search_violations(
+    request: Request,
     query: str | None = None,
     severity: str | None = None,
     section: str | None = None,
@@ -17,10 +21,15 @@ def search_violations(
     date_start: date | None = None,
     date_end: date | None = None,
     sort_by: str = "date_desc",
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(20, ge=1, le=50),
     offset: int = Query(0, ge=0),
+    include_total: bool = False,
     db: Session = Depends(get_db)
 ):
+    # Prevent expensive leading wildcard sequential scans
+    if query and len(query) < 3:
+        return {"total": None, "limit": limit, "offset": offset, "results": [], "message": "Search terms must be at least 3 characters"}
+
     db_query = db.query(
         Violation.id,
         Violation.severity,
@@ -57,7 +66,12 @@ def search_violations(
     else:
         db_query = db_query.order_by(desc(Inspection.inspection_date), desc(Violation.id))
 
-    total = db_query.count()
+    # CTE Optimization for count
+    total = None
+    if include_total:
+        cte = db_query.cte("filtered_violations")
+        total = db.execute(select(func.count()).select_from(cte)).scalar()
+        
     results = db_query.offset(offset).limit(limit).all()
 
     violations = [

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { getInspector } from "../services/api";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
@@ -25,33 +25,23 @@ export default function InspectorPage() {
     load();
   }, [id]);
 
-  // Set page title dynamically
   useEffect(() => {
     if (inspector) {
       document.title = `Inspector: ${inspector.inspector_name || inspector.inspector_id} - AWA Platform`;
-    } else {
-      document.title = "Loading Inspector... - AWA Platform";
     }
   }, [inspector]);
 
   if (loading) {
-    return (
-      <div className="page" style={{ textAlign: "center", padding: "6rem 2rem" }}>
-        <div className="loader"></div>
-        <p style={{ marginTop: "1rem", color: "var(--neutral-600)" }}>Loading inspector analytics...</p>
-      </div>
-    );
+    return <div className="p-12 font-code-data text-on-surface-variant tracking-widest">INITIALIZING_DATALINK...</div>;
   }
 
   if (error) {
     return (
-      <div className="page">
-        <Link id="error-back-link" to="/" className="back-link">
-          ← Back to search
+      <div className="p-12">
+        <Link to="/" className="inline-flex items-center gap-2 text-on-surface-variant hover:text-secondary font-label-caps text-[12px] uppercase tracking-widest transition-colors no-underline mb-8 font-bold">
+          <span className="material-symbols-outlined text-[16px]">arrow_back</span> Back to search
         </Link>
-        <div className="error-banner" style={{ marginTop: "1rem" }}>
-          {error}
-        </div>
+        <div className="font-code-data text-error tracking-widest">{error}</div>
       </div>
     );
   }
@@ -76,166 +66,121 @@ export default function InspectorPage() {
   const facilitiesVisited = Object.values(facilitiesMap).sort((a, b) => b.violations_count - a.violations_count);
 
   return (
-    <div className="page">
-      <Link id="back-link" to="/" className="back-link">
-        ← Back to search
+    <div className="p-12 max-w-[1440px] mx-auto relative z-10">
+      
+      <Link to="/" className="inline-flex items-center gap-2 text-on-surface-variant hover:text-secondary font-label-caps text-[12px] uppercase tracking-widest transition-colors no-underline mb-8 font-bold">
+        <span className="material-symbols-outlined text-[16px]">arrow_back</span> Back to search
       </Link>
 
-      {/* Header section */}
-      <header
-        style={{
-          background: "#fff",
-          padding: "2rem",
-          borderRadius: "var(--radius-lg)",
-          border: "1px solid var(--neutral-200)",
-          boxShadow: "var(--shadow-md)",
-          marginBottom: "1.5rem",
-        }}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "1.5rem" }}>
-          <div>
-            <h1 style={{ margin: "0 0 0.25rem 0", fontSize: "2rem", fontWeight: "800", color: "var(--neutral-900)" }}>
-              {inspector.inspector_name || "Inspector Profile"}
-            </h1>
-            <p style={{ fontSize: "1rem", color: "var(--neutral-600)", margin: 0 }}>
-              Inspector ID: <strong>{inspector.inspector_id}</strong>
-            </p>
-          </div>
-          <div style={{ textAlign: "right" }}>
-            <span style={{ fontSize: "0.75rem", textTransform: "uppercase", color: "var(--neutral-600)", fontWeight: "700", letterSpacing: "0.05em" }}>
-              Total Inspections
-            </span>
-            <p style={{ margin: "0.25rem 0 0 0", fontSize: "2rem", fontWeight: "800", color: "var(--neutral-900)" }}>
-              {inspector.total_inspections}
-            </p>
-          </div>
+      {/* Header Card */}
+      <div className="bg-surface-container-lowest border border-outline-variant/10 rounded-2xl p-8 mb-8 shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-6">
+        <div>
+          <h1 className="m-0 text-[32px] font-headline-lg font-bold text-on-surface mb-2">{inspector.inspector_name || "Inspector Profile"}</h1>
+          <p className="font-code-data text-[13px] text-on-surface-variant tracking-widest uppercase">
+            Inspector ID: <strong className="text-on-surface">{inspector.inspector_id}</strong>
+          </p>
         </div>
-      </header>
+        <div className="md:text-right border-l border-outline-variant/10 pl-6">
+          <p className="font-label-caps text-[10px] text-on-surface-variant uppercase tracking-widest mb-1 font-bold">TOTAL INSPECTIONS</p>
+          <p className="font-headline-lg text-[32px] font-bold text-secondary">{inspector.total_inspections}</p>
+        </div>
+      </div>
 
-      {/* Anomaly flag banner */}
+      {/* Anomaly Banner */}
       {inspector.anomaly_flag && (
-        <div
-          className="risk-banner-card"
-          style={{
-            background: "var(--danger-bg)",
-            color: "var(--danger-text)",
-            borderColor: "var(--danger-border)",
-            borderLeftWidth: "4px",
-            marginBottom: "1.5rem",
-          }}
-        >
-          <span>⚠️</span> <strong>Anomaly Detected:</strong> Non-compliance rate deviates significantly from the regional average.
+        <div className="bg-error/10 border border-error/20 rounded-xl p-4 flex items-center gap-3 mb-8 shadow-lg">
+          <span className="material-symbols-outlined text-error">warning</span>
+          <span className="font-label-caps text-[12px] font-bold text-error tracking-widest">
+            Anomaly Detected: Non-compliance rate deviates significantly from the regional average
+          </span>
         </div>
       )}
 
-      {/* Stats section */}
-      <section className="stats-grid">
-        <div className="stat-card">
-          <span className="stat-label">Non-Compliance Rate</span>
-          <p className="stat-value">{inspector.non_compliance_rate}%</p>
+      {/* Stats Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
+        <div className="bg-surface-container-low border border-outline-variant/10 rounded-2xl p-6">
+          <p className="font-label-caps text-[10px] text-on-surface-variant uppercase tracking-widest mb-1 font-bold">NON-COMPLIANCE RATE</p>
+          <p className="font-headline-md text-[24px] font-bold text-on-surface">{inspector.non_compliance_rate}%</p>
         </div>
-        <div className="stat-card">
-          <span className="stat-label">Regional Average</span>
-          <p className="stat-value">
-            {inspector.regional_average_rate != null ? `${inspector.regional_average_rate}%` : "N/A"}
-          </p>
+        <div className="bg-surface-container-low border border-outline-variant/10 rounded-2xl p-6">
+          <p className="font-label-caps text-[10px] text-on-surface-variant uppercase tracking-widest mb-1 font-bold">REGIONAL AVERAGE</p>
+          <p className="font-headline-md text-[24px] font-bold text-on-surface">{inspector.regional_average_rate != null ? `${inspector.regional_average_rate}%` : "N/A"}</p>
         </div>
-        <div className="stat-card">
-          <span className="stat-label">Primary State</span>
-          <p className="stat-value" style={{ color: "var(--primary)" }}>
-            {inspector.primary_state || "—"}
-          </p>
+        <div className="bg-surface-container-low border border-outline-variant/10 rounded-2xl p-6">
+          <p className="font-label-caps text-[10px] text-on-surface-variant uppercase tracking-widest mb-1 font-bold">PRIMARY STATE</p>
+          <p className="font-headline-md text-[24px] font-bold text-secondary">{inspector.primary_state || "—"}</p>
         </div>
-      </section>
+      </div>
 
-      {/* Comparison Chart */}
-      <section style={{ marginTop: "3rem" }}>
-        <h2 style={{ fontSize: "1.5rem", fontWeight: "700", color: "var(--neutral-900)", marginBottom: "1.25rem" }}>
-          Compliance Rate Comparison
-        </h2>
-        <div style={{ background: "#fff", padding: "2rem", borderRadius: "12px", border: "1px solid var(--neutral-200)", boxShadow: "var(--shadow-sm)" }}>
-          <div style={{ width: "100%", height: 300 }}>
-            {inspector.regional_average_rate != null ? (
-              <ResponsiveContainer>
-                <BarChart data={[
-                  { name: "This Inspector", rate: inspector.non_compliance_rate, fill: "#2563eb" },
-                  { name: "Regional Average", rate: inspector.regional_average_rate, fill: "#9ca3af" }
-                ]} margin={{ top: 20, right: 30, left: 0, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="name" stroke="#6b7280" />
-                  <YAxis stroke="#6b7280" domain={[0, 100]} tickFormatter={(val) => `${val}%`} />
-                  <Tooltip cursor={{ fill: 'transparent' }} formatter={(val) => `${val}%`} contentStyle={{ borderRadius: "8px" }} />
-                  <Bar dataKey="rate" radius={[4, 4, 0, 0]} label={{ position: 'top', formatter: (val) => `${val}%`, fill: '#4b5563', fontWeight: 600 }} />
-                </BarChart>
-              </ResponsiveContainer>
-            ) : <p style={{ color: "var(--neutral-500)", textAlign: "center" }}>Regional comparison data not available</p>}
-          </div>
-          
-          {inspector.regional_average_rate != null && (
-            <div style={{ textAlign: "center", marginTop: "1rem", fontWeight: "600" }}>
-              {inspector.anomaly_flag ? (
-                <span style={{ color: "var(--danger-text)" }}>
-                  {Math.abs(inspector.non_compliance_rate - inspector.regional_average_rate)}% {inspector.non_compliance_rate > inspector.regional_average_rate ? "above" : "below"} average
-                </span>
+      <div className="flex gap-8 flex-col lg:flex-row">
+        
+        {/* Left Column: Chart */}
+        <div className="w-full lg:w-1/2">
+          <h2 className="font-headline-md text-[24px] font-bold text-on-surface mb-6">Compliance Rate Comparison</h2>
+          <div className="bg-surface-container-lowest border border-outline-variant/10 rounded-2xl p-6 shadow-xl mb-8">
+            <div className="h-[300px]">
+              {inspector.regional_average_rate != null ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart 
+                    data={[
+                      { name: "This Inspector", rate: inspector.non_compliance_rate },
+                      { name: "Regional Average", rate: inspector.regional_average_rate }
+                    ]} 
+                    margin={{ top: 20, right: 30, left: 0, bottom: 5 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" vertical={false} />
+                    <XAxis dataKey="name" stroke="rgba(255,255,255,0.5)" fontSize={11} tickLine={false} axisLine={false} dy={10} />
+                    <YAxis stroke="rgba(255,255,255,0.5)" domain={[0, 100]} tickFormatter={(val) => `${val}%`} fontSize={11} tickLine={false} axisLine={false} dx={-10} />
+                    <Tooltip 
+                      cursor={{ fill: 'rgba(255,255,255,0.05)' }} 
+                      formatter={(val) => `${val}%`} 
+                      contentStyle={{ backgroundColor: '#064e3b', borderColor: 'rgba(255,255,255,0.2)', borderRadius: '8px', color: '#fff', fontSize: '12px' }}
+                      itemStyle={{ color: '#fff', fontWeight: 'bold' }}
+                    />
+                    <Bar dataKey="rate" radius={[4, 4, 0, 0]} fill="#e9c349" />
+                  </BarChart>
+                </ResponsiveContainer>
               ) : (
-                <span style={{ color: "var(--success-text)" }}>Within normal range</span>
+                <div className="flex items-center justify-center h-full text-on-surface-variant font-code-data tracking-widest text-[12px]">
+                  REGIONAL COMPARISON DATA UNAVAILABLE
+                </div>
               )}
             </div>
-          )}
+          </div>
         </div>
-      </section>
 
-      {/* Facilities list */}
-      <section style={{ marginTop: "2rem" }}>
-        <h2 style={{ fontSize: "1.5rem", fontWeight: "700", color: "var(--neutral-900)", marginBottom: "1.25rem" }}>
-          Facilities Inspected
-        </h2>
-        {facilitiesVisited.length > 0 ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-            {facilitiesVisited.map((fac) => {
-              const badgeClass = fac.violations_count > 5 ? "badge badge-red" : fac.violations_count >= 2 ? "badge badge-yellow" : "badge badge-green";
-              return (
-                <div
-                  key={fac.id}
-                  style={{
-                    background: "#fff",
-                    padding: "1.25rem",
-                    borderRadius: "var(--radius-md)",
-                    border: "1px solid var(--neutral-200)",
-                    boxShadow: "var(--shadow-sm)",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    gap: "1rem",
-                  }}
-                >
+        {/* Right Column: Facilities */}
+        <div className="w-full lg:w-1/2">
+          <h2 className="font-headline-md text-[24px] font-bold text-on-surface mb-6">Facilities Inspected</h2>
+          
+          {facilitiesVisited.length > 0 ? (
+            <div className="flex flex-col gap-4">
+              {facilitiesVisited.map((fac) => (
+                <div key={fac.id} className="bg-surface-container-low border border-outline-variant/10 rounded-xl p-4 flex justify-between items-center hover:bg-surface-container-highest transition-colors">
                   <div>
-                    <Link
-                      id={`facility-link-${fac.id}`}
-                      to={`/facility/${fac.id}`}
-                      style={{ fontSize: "1.1rem", fontWeight: "700", color: "var(--primary)", textDecoration: "none" }}
-                    >
+                    <Link to={`/facility/${fac.id}`} className="font-headline-sm text-[16px] font-bold text-secondary hover:text-tertiary transition-colors no-underline">
                       {fac.name}
                     </Link>
-                    <p style={{ margin: "0.25rem 0 0 0", fontSize: "0.85rem", color: "var(--neutral-600)" }}>
-                      State: <strong>{fac.state}</strong> • Visited <strong>{fac.inspections_count}</strong> time{fac.inspections_count !== 1 ? "s" : ""}
+                    <p className="font-code-data text-[12px] text-on-surface-variant mt-1">
+                      State: <strong className="text-on-surface">{fac.state}</strong> • Visited <strong className="text-on-surface">{fac.inspections_count}</strong> time{fac.inspections_count !== 1 ? "s" : ""}
                     </p>
                   </div>
-                  <div style={{ textAlign: "right", flexShrink: 0 }}>
-                    <span className={badgeClass}>
-                      {fac.violations_count} Violation{fac.violations_count !== 1 ? "s" : ""}
+                  <div>
+                    <span className={`px-3 py-1 rounded-full font-label-caps text-[10px] font-bold ${fac.violations_count > 5 ? 'bg-error/10 text-error border border-error/20' : fac.violations_count >= 2 ? 'bg-secondary/10 text-secondary border border-secondary/20' : 'bg-tertiary/10 text-tertiary border border-tertiary/20'}`}>
+                      {fac.violations_count} VIOLATION{fac.violations_count !== 1 ? 'S' : ''}
                     </span>
                   </div>
                 </div>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="empty-state" style={{ textAlign: "center", padding: "4rem 2rem" }}>
-            <p style={{ color: "var(--neutral-500)" }}>No facilities inspected.</p>
-          </div>
-        )}
-      </section>
+              ))}
+            </div>
+          ) : (
+            <div className="bg-surface-container-low border border-outline-variant/10 rounded-xl p-12 text-center font-code-data text-[12px] text-on-surface-variant tracking-widest">
+              NO FACILITIES INSPECTED
+            </div>
+          )}
+        </div>
+
+      </div>
     </div>
   );
 }

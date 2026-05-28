@@ -2,10 +2,13 @@ import time
 from datetime import datetime
 from pathlib import Path
 import pandas as pd
+import re
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models import Facility, Inspection, Violation
+
+HASH_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
 
 
 def _clean(val):
@@ -123,6 +126,10 @@ def run_full_import():
 
         # Check duplicates
         hash_id = _clean(row.get("hash_id"))
+        if hash_id and not HASH_RE.match(hash_id):
+            print(f"Warning: Invalid hash_id '{hash_id}'. Skipping record.")
+            continue
+            
         source_pdf = _clean(row.get("web_reportLink"))
 
         if hash_id and hash_id in seen_hash_ids:

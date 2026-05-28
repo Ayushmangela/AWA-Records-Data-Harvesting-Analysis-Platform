@@ -23,6 +23,9 @@ export default function DashboardPage() {
   const [sortBy, setSortBy] = useState("violations_desc");
   
   const [totalCount, setTotalCount] = useState(0);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [cursors, setCursors] = useState([null]);
+  const [nextCursor, setNextCursor] = useState(null);
 
   useEffect(() => {
     const handleMouseMove = (e) => {
@@ -39,7 +42,7 @@ export default function DashboardPage() {
     };
   }, []);
 
-  const loadData = async () => {
+  const loadData = async (currentPage = pageIndex, currentCursors = cursors) => {
     setLoading(true);
     try {
       const params = {
@@ -53,9 +56,23 @@ export default function DashboardPage() {
       if (licenseTypeFilter && licenseTypeFilter !== "All Types") params.license_type = licenseTypeFilter;
       if (showActiveOnly) params.has_violations = true;
       
+      const cursor = currentCursors[currentPage];
+      if (cursor) {
+        params.cursor = cursor;
+      } else {
+        params.offset = currentPage * 20;
+      }
+
+      if (currentPage === 0) {
+        params.include_total = true;
+      }
+      
       const res = await searchFacilities(params);
       setFacilities(res.results || []);
-      setTotalCount(res.total || 0);
+      setNextCursor(res.cursor || null);
+      if (res.total !== undefined && res.total !== null) {
+        setTotalCount(res.total);
+      }
     } catch (err) {
       console.error(err);
     } finally {
@@ -69,7 +86,26 @@ export default function DashboardPage() {
 
   const handleSearch = (e) => {
     e.preventDefault();
-    loadData();
+    setPageIndex(0);
+    setCursors([null]);
+    loadData(0, [null]);
+  };
+
+  const handleNextPage = () => {
+    if (!nextCursor && facilities.length < 20) return;
+    const newCursors = [...cursors];
+    newCursors[pageIndex + 1] = nextCursor;
+    setCursors(newCursors);
+    const nextIdx = pageIndex + 1;
+    setPageIndex(nextIdx);
+    loadData(nextIdx, newCursors);
+  };
+
+  const handlePrevPage = () => {
+    if (pageIndex === 0) return;
+    const prevIdx = pageIndex - 1;
+    setPageIndex(prevIdx);
+    loadData(prevIdx, cursors);
   };
 
   return (
@@ -161,12 +197,20 @@ export default function DashboardPage() {
 
         {/* Results Count & Pagination */}
         <div className="flex items-center justify-between mb-8">
-          <p className="font-body-md text-on-surface-variant">Showing <span className="text-secondary font-bold">{facilities.length}</span> of {totalCount} facilities (Page 1)</p>
+          <p className="font-body-md text-on-surface-variant">Showing <span className="text-secondary font-bold">{facilities.length}</span> of {totalCount === null || totalCount === 0 && facilities.length > 0 ? "many" : totalCount} facilities (Page {pageIndex + 1})</p>
           <div className="flex items-center gap-2">
-            <button className="p-2 border border-outline-variant/10 rounded-lg text-on-surface-variant hover:bg-surface-variant/30 hover:text-on-surface transition-all">
+            <button 
+              onClick={handlePrevPage}
+              disabled={pageIndex === 0}
+              className={`p-2 border border-outline-variant/10 rounded-lg transition-all ${pageIndex === 0 ? "opacity-50 cursor-not-allowed" : "text-on-surface-variant hover:bg-surface-variant/30 hover:text-on-surface"}`}
+            >
               <span className="material-symbols-outlined">chevron_left</span>
             </button>
-            <button className="p-2 border border-outline-variant/10 rounded-lg text-on-surface-variant hover:bg-surface-variant/30 hover:text-on-surface transition-all">
+            <button 
+              onClick={handleNextPage}
+              disabled={(!nextCursor && facilities.length < 20) || facilities.length === 0}
+              className={`p-2 border border-outline-variant/10 rounded-lg transition-all ${(!nextCursor && facilities.length < 20) || facilities.length === 0 ? "opacity-50 cursor-not-allowed" : "text-on-surface-variant hover:bg-surface-variant/30 hover:text-on-surface"}`}
+            >
               <span className="material-symbols-outlined">chevron_right</span>
             </button>
           </div>

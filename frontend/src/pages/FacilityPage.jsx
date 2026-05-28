@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { getFacility } from "../services/api";
+import { getFacility, generateAISummary } from "../services/api";
 import PDFViewer from "../components/PDFViewer";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
 
@@ -179,6 +179,110 @@ function InspectionAccordion({ inspection, onOpenPdf }) {
   );
 }
 
+function AISummaryPanel({ facilityId }) {
+  const [summaryData, setSummaryData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const fetchSummary = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await generateAISummary(facilityId);
+      if (data.error) {
+        setError(data.error);
+      } else {
+        setSummaryData(data);
+      }
+    } catch (err) {
+      setError(err.message || "Failed to fetch summary");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!summaryData && !loading && !error) {
+    return (
+      <div className="bg-surface-container-lowest border border-outline-variant/10 rounded-2xl p-8 mb-8 shadow-xl flex flex-col items-center justify-center">
+        <h2 className="font-headline-md text-[24px] font-bold text-on-surface mb-4">AI Facility Analysis</h2>
+        <p className="font-body-md text-on-surface-variant mb-6 text-center max-w-lg">
+          Generate a comprehensive AI summary of this facility's compliance history, violations, and risk assessment based on recent inspection records.
+        </p>
+        <button 
+          onClick={fetchSummary}
+          className="bg-primary text-on-primary px-6 py-3 rounded-full font-label-caps tracking-widest font-bold hover:opacity-90 transition-opacity flex items-center gap-2 cursor-pointer border-none"
+        >
+          <span className="material-symbols-outlined text-[18px]">auto_awesome</span>
+          Generate AI Summary
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-surface-container-lowest border border-outline-variant/10 rounded-2xl p-8 mb-8 shadow-xl">
+      <div className="flex justify-between items-center mb-6">
+        <h2 className="font-headline-md text-[24px] font-bold text-on-surface flex items-center gap-2">
+          <span className="material-symbols-outlined text-primary">auto_awesome</span>
+          AI Facility Analysis
+        </h2>
+        {loading && <span className="font-code-data text-on-surface-variant text-[12px] animate-pulse">ANALYZING RECORDS...</span>}
+      </div>
+
+      {error && (
+        <div className="bg-error-container/20 border border-error-container p-4 rounded-lg text-error mb-6">
+          {error}
+        </div>
+      )}
+
+      {summaryData && (
+        <div className="flex flex-col gap-4 animate-fade-in">
+          {summaryData.sentences.map((sentence, idx) => {
+            const isUnverified = sentence.type === "UNVERIFIED";
+            return (
+              <div 
+                key={idx} 
+                className={`p-4 rounded-lg border flex gap-3 ${
+                  isUnverified 
+                    ? "bg-surface-variant/30 border-secondary/30" 
+                    : "bg-surface-container-low border-outline-variant/10"
+                }`}
+              >
+                {isUnverified ? (
+                  <span className="material-symbols-outlined text-secondary shrink-0 mt-0.5" title="Model Commentary / Unverified">info</span>
+                ) : (
+                  <span className="material-symbols-outlined text-primary shrink-0 mt-0.5" title="Verified Fact/Inference">check_circle</span>
+                )}
+                
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className={`font-label-caps text-[10px] tracking-widest font-bold px-2 py-0.5 rounded-full ${
+                      isUnverified 
+                        ? "bg-secondary/20 text-secondary" 
+                        : "bg-primary/10 text-primary"
+                    }`}>
+                      {isUnverified ? "MODEL COMMENTARY" : sentence.type}
+                    </span>
+                    {sentence.citation && (
+                      <span className="font-code-data text-[10px] text-on-surface-variant">{sentence.citation}</span>
+                    )}
+                  </div>
+                  <p className={`font-body-md text-[14px] leading-relaxed m-0 ${isUnverified ? "text-on-surface-variant italic" : "text-on-surface"}`}>
+                    {sentence.text}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
+          <p className="font-code-data text-[11px] text-on-surface-variant/70 text-right mt-4 italic">
+            Generated at {new Date(summaryData.generated_at).toLocaleString()}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function FacilityPage() {
   const { id } = useParams();
   const [facility, setFacility] = useState(null);
@@ -262,6 +366,8 @@ export default function FacilityPage() {
               </div>
             </div>
           </div>
+
+          <AISummaryPanel facilityId={facility.id} />
 
           {/* Animal Inventory Trend Chart */}
           {facility.inspections && facility.inspections.some(insp => insp.inventory && insp.inventory.length > 0) && (

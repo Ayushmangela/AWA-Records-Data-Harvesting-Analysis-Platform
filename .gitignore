@@ -18,10 +18,8 @@ frontend/node_modules/
 frontend/dist/
 
 # Large datasets
-backend/data/raw_pdfs/
-backend/data/processed/
-backend/data/*.pdf
-backend/data/csv_exports/
+backend/data/
+cursor_project_context.md
 
 # Mac / editor junk
 .DS_Store

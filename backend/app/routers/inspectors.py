@@ -1,12 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import case, desc, func
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
 from app.models import Facility, Inspection
 from app.services.risk_engine import calculate_inspector_anomaly
+from app.auth import require_api_key
+from app.limiter import limiter
 
-router = APIRouter(prefix="/inspectors", tags=["inspectors"])
+router = APIRouter(prefix="/inspectors", tags=["inspectors"], dependencies=[Depends(require_api_key)])
 
 
 def _serialize_inspection(inspection: Inspection) -> dict:
@@ -25,7 +27,9 @@ def _serialize_inspection(inspection: Inspection) -> dict:
 
 
 @router.get("")
+@limiter.limit("60/minute")
 def list_inspectors(
+    request: Request,
     state: str | None = None,
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
