@@ -15,6 +15,7 @@ class ViolationOut(BaseModel):
     description: str | None
     source_pdf: str | None
     source_page: int | None
+    category: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -77,17 +78,24 @@ class RiskFlagsOut(BaseModel):
     is_teachable_heavy: bool = False
     recent_inventory_spike: bool = False
     score: int = 0
+    risk_level: str = "LOW"
+    risk_drivers: List[str] = Field(default_factory=list)
 
 
 class FacilityDetailOut(FacilityOut):
     risk_flags: RiskFlagsOut
     inspections: List[InspectionOut] = Field(default_factory=list)
+    violation_categories: Dict[str, int] = Field(default_factory=dict)
 
 
 class FacilityListItemOut(FacilityOut):
     total_inspections: int = 0
     total_violations: int = 0
     last_inspection_date: date | None = None
+    risk_level: str = "LOW"
+    animal_limit_exceeded: bool = False
+    has_high_direct_violations: bool = False
+    recent_inventory_spike: bool = False
 
 
 class FacilityListOut(BaseModel):
@@ -132,10 +140,45 @@ class InspectorListOut(BaseModel):
     results: List[InspectorOut]
 
 
-class AISentence(BaseModel):
-    type: str
-    text: str
-    citation: str | None = None
+class CitationReference(BaseModel):
+    inspection_id: int
+    inspection_date: str
+    source_page: int | None = None
+
+
+class AICompliancePattern(BaseModel):
+    pattern_name: str
+    observation: str
+    citations: List[CitationReference] = Field(default_factory=list)
+
+
+class AIInvestigationPriority(BaseModel):
+    priority: str
+    rationale: str
+    citations: List[CitationReference] = Field(default_factory=list)
+
+
+class AIAnalyticalInference(BaseModel):
+    inference: str
+    supporting_facts: List[str]
+    confidence: str  # "LOW", "MEDIUM", "HIGH"
+    citations: List[CitationReference] = Field(default_factory=list)
+
+
+class AISummarySchema(BaseModel):
+    executive_summary: str
+    risk_narrative: str
+    compliance_patterns: List[AICompliancePattern]
+    investigation_priorities: List[AIInvestigationPriority]
+    analytical_inferences: List[AIAnalyticalInference]
+
+
+class EvidenceCoverage(BaseModel):
+    inspections_reviewed: int
+    total_inspections_available: int
+    violations_reviewed: int
+    inventory_records_reviewed: int
+    inspectors_reviewed: int
 
 
 class AISummaryOut(BaseModel):
@@ -143,7 +186,10 @@ class AISummaryOut(BaseModel):
     facility_id: int
     generated_at: str
     model: str
-    sentences: List[AISentence]
+    schema_version: int = 1
+    analysis_scope: int = 8
+    summary: AISummarySchema
+    evidence_coverage: EvidenceCoverage
     total_inspections: int
 
 

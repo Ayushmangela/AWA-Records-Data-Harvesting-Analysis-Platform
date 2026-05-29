@@ -14,6 +14,7 @@ from app.models import Facility, Inspection, Inventory, Violation
 from app.schemas import AISummaryOut, FacilityDetailOut, FacilityListOut, LegalMemoOut
 from app.services.ai_assistant import generate_facility_summary, generate_legal_memo
 from app.services.risk_engine import calculate_facility_risk_flags, cutoff_18_months_ago
+from app.services.category_mapper import map_section_to_category
 
 logger = logging.getLogger(__name__)
 
@@ -325,6 +326,8 @@ def list_facilities(
     results = []
     for facility in facilities:
         stats = inspection_stats.get(facility.id)
+        # Calculate facility risk flags deterministically
+        risk_flags = calculate_facility_risk_flags(db, facility.id)
         # Because FacilityListItemOut uses from_attributes=True, we can pass a dict
         # mixing the SQLAlchemy model and extra fields, and Pydantic will extract them.
         item_dict = {
@@ -332,6 +335,10 @@ def list_facilities(
             "total_inspections": stats.total_inspections if stats else 0,
             "total_violations": violation_stats.get(facility.id, 0),
             "last_inspection_date": stats.last_inspection_date if stats else None,
+            "risk_level": risk_flags.get("risk_level", "LOW"),
+            "animal_limit_exceeded": risk_flags.get("animal_limit_exceeded", False),
+            "has_high_direct_violations": risk_flags.get("has_high_direct_violations", False),
+            "recent_inventory_spike": risk_flags.get("recent_inventory_spike", False),
         }
         results.append(item_dict)
 
@@ -377,12 +384,21 @@ def get_facility(facility_id: int, db: Session = Depends(get_db)):
         .all()
     )
 
+    # Populate violation categories and build category aggregates
+    violation_categories = {}
+    for insp in inspections:
+        for viol in insp.violations:
+            cat = map_section_to_category(viol.section, viol.description)
+            viol.category = cat
+            violation_categories[cat] = violation_categories.get(cat, 0) + 1
+
     risk_flags = calculate_facility_risk_flags(db, facility_id)
 
     return {
         **facility.__dict__,
         "risk_flags": risk_flags,
         "inspections": inspections,
+        "violation_categories": violation_categories,
     }
 
 

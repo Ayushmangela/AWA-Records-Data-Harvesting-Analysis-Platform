@@ -8,6 +8,7 @@ from app.auth import require_api_key
 from app.database import get_db
 from app.limiter import limiter
 from app.models import Facility, Inspection, Violation
+from app.services.category_mapper import map_section_to_category
 
 router = APIRouter(
     prefix="/violations", tags=["violations"], dependencies=[Depends(require_api_key)]
@@ -101,6 +102,7 @@ def search_violations(
             "facility_id": row.facility_id,
             "facility_name": row.facility_name,
             "facility_state": row.facility_state,
+            "category": map_section_to_category(row.section, row.description),
         }
         for row in results
     ]

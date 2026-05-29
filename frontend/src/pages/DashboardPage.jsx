@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { searchFacilities } from "../services/api";
 
 function formatDate(value) {
@@ -10,6 +10,8 @@ function formatDate(value) {
 
 export default function DashboardPage() {
   const glowRef = useRef(null);
+  const location = useLocation();
+  const navigate = useNavigate();
   
   const [facilities, setFacilities] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -42,7 +44,7 @@ export default function DashboardPage() {
     };
   }, []);
 
-  const loadData = async (currentPage = pageIndex, currentCursors = cursors) => {
+  const loadData = async (currentPage = pageIndex, currentCursors = cursors, searchTermOverride) => {
     setLoading(true);
     try {
       const params = {
@@ -50,7 +52,8 @@ export default function DashboardPage() {
         sort_by: sortBy
       };
       
-      if (searchTerm) params.name = searchTerm;
+      const term = searchTermOverride !== undefined ? searchTermOverride : searchTerm;
+      if (term) params.name = term;
       if (stateFilter && stateFilter !== "All States") params.state = stateFilter;
       if (speciesFilter) params.species = speciesFilter;
       if (licenseTypeFilter && licenseTypeFilter !== "All Types") params.license_type = licenseTypeFilter;
@@ -81,14 +84,21 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
-    loadData();
-  }, []);
+    const params = new URLSearchParams(location.search);
+    const nameParam = params.get("name") || "";
+    setSearchTerm(nameParam);
+    setPageIndex(0);
+    setCursors([null]);
+    loadData(0, [null], nameParam);
+  }, [location.search, sortBy, stateFilter, licenseTypeFilter, showActiveOnly]);
 
   const handleSearch = (e) => {
     e.preventDefault();
-    setPageIndex(0);
-    setCursors([null]);
-    loadData(0, [null]);
+    if (searchTerm.trim()) {
+      navigate(`/?name=${encodeURIComponent(searchTerm.trim())}`);
+    } else {
+      navigate(`/`);
+    }
   };
 
   const handleNextPage = () => {
@@ -228,7 +238,7 @@ export default function DashboardPage() {
         ) : (
           <section className="grid grid-cols-1 md:grid-cols-2 gap-8">
             {facilities.map((fac) => {
-              const hasViolations = fac.violation_count > 0;
+              const hasViolations = fac.total_violations > 0;
               return (
                 <Link key={fac.id} to={`/facility/${fac.id}`} className="bg-surface-container-low border border-outline-variant/10 rounded-2xl overflow-hidden hover:border-secondary/30 transition-all group flex flex-col cursor-pointer shadow-xl no-underline">
                   <div className={`h-1.5 ${hasViolations ? 'bg-error' : 'bg-secondary'}`}></div>
@@ -241,7 +251,7 @@ export default function DashboardPage() {
                       {hasViolations ? (
                         <div className="bg-error/10 text-error border border-error/20 px-3 py-1.5 rounded-lg font-label-caps text-[11px] flex items-center gap-1.5 uppercase font-bold">
                           <span className="material-symbols-outlined text-[16px]" style={{ fontVariationSettings: "'FILL' 1" }}>warning</span>
-                          {fac.violation_count} VIOLATIONS
+                          {fac.total_violations} VIOLATIONS
                         </div>
                       ) : (
                         <div className="bg-secondary/10 text-secondary border border-secondary/20 px-3 py-1.5 rounded-lg font-label-caps text-[11px] flex items-center gap-1.5 uppercase font-bold">
@@ -264,7 +274,7 @@ export default function DashboardPage() {
                       <div className="flex flex-col">
                         <p className="font-label-caps font-bold text-[10px] text-on-surface-variant uppercase mb-1">Last Inspected</p>
                         <p className="text-secondary font-bold font-code-data text-[13px]">
-                          {fac.latest_inspection_date ? formatDate(fac.latest_inspection_date) : "—"}
+                          {fac.last_inspection_date ? formatDate(fac.last_inspection_date) : "—"}
                         </p>
                       </div>
                       <button className="bg-surface-container-highest hover:bg-secondary text-on-surface-variant hover:text-on-secondary px-6 py-2.5 rounded-lg font-label-caps text-[11px] border border-outline-variant/10 transition-all flex items-center gap-2 uppercase font-bold">

@@ -116,6 +116,47 @@ def calculate_facility_risk_flags(db: Session, facility_id: int) -> dict:
         if prev_total > 0 and curr_total > prev_total * 3:
             flags["inventory_spike"] = True
 
+    # Align new keys
+    flags["animal_limit_exceeded"] = flags["exceeds_animal_limit"]
+    flags["has_high_direct_violations"] = flags["high_direct_violations"]
+    flags["recent_inventory_spike"] = flags["inventory_spike"]
+
+    # Compute risk level
+    active_flags_count = sum([
+        flags["animal_limit_exceeded"],
+        flags["has_high_direct_violations"],
+        flags["recent_inventory_spike"]
+    ])
+    
+    if flags["has_high_direct_violations"] or active_flags_count >= 2:
+        flags["risk_level"] = "HIGH"
+    elif active_flags_count == 1:
+        flags["risk_level"] = "MEDIUM"
+    else:
+        flags["risk_level"] = "LOW"
+
+    # Compute risk drivers
+    drivers = []
+    if flags["animal_limit_exceeded"]:
+        drivers.append("Licensed animal limit exceeded in latest inventory")
+    if flags["has_high_direct_violations"]:
+        drivers.append("More than 3 direct/critical violations in the last 18 months")
+    if flags["recent_inventory_spike"]:
+        drivers.append("Sudden animal inventory spike (>3x increase) between recent inspections")
+
+    # Check for any direct/critical violation in the rolling 18 months
+    if not flags["has_high_direct_violations"]:
+        has_any_recent_direct = db.query(Violation.id).join(Inspection, Violation.inspection_id == Inspection.id).filter(
+            Inspection.facility_id == facility_id,
+            Inspection.inspection_date >= cutoff_date,
+            func.lower(Violation.severity).in_(["direct", "critical"])
+        ).limit(1).first() is not None
+        if has_any_recent_direct:
+            drivers.append("Recent critical or direct violations noted in the past 18 months")
+
+    flags["risk_drivers"] = drivers
+    flags["score"] = active_flags_count * 5
+
     return flags
 
 
