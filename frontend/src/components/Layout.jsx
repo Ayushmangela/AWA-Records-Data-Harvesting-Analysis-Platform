@@ -14,7 +14,7 @@ export default function Layout({ children }) {
   const handleGlobalSearch = (e) => {
     if (e.key === "Enter") {
       if (globalQuery.trim()) {
-        navigate(`/?name=${encodeURIComponent(globalQuery.trim())}`);
+        navigate(`/search?name=${encodeURIComponent(globalQuery.trim())}`);
       }
       setGlobalQuery("");
     }
@@ -23,7 +23,7 @@ export default function Layout({ children }) {
   return (
     <div className="font-body-md text-body-md antialiased custom-scrollbar dark min-h-screen text-on-surface">
       {/* Top Persistent Navigation Bar */}
-      <header className="fixed top-0 left-0 right-0 h-16 bg-surface-container-lowest border-b border-outline-variant/10 flex items-center justify-between px-6 z-50">
+      <header className="fixed top-0 left-0 right-0 h-16 bg-surface-container-lowest/95 backdrop-blur-xl border-b border-outline-variant/10 flex items-center justify-between px-6 z-50 shadow-[0_12px_40px_rgba(0,0,0,0.35)]">
         
         {/* Left Side: Logo, Product Name & Global Search */}
         <div className="flex items-center gap-6 flex-1 md:flex-initial">
@@ -35,13 +35,13 @@ export default function Layout({ children }) {
             {mobileMenuOpen ? 'close' : 'menu'}
           </button>
 
-          <Link to="/" className="flex items-center gap-3 no-underline">
-            <div className="w-9 h-9 rounded-lg bg-secondary flex items-center justify-center text-on-secondary shadow-lg">
+          <Link to="/search" className="flex items-center gap-3 no-underline">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-secondary to-primary flex items-center justify-center text-on-secondary shadow-lg shadow-secondary/20 ring-1 ring-white/10">
               <span className="material-symbols-outlined text-[22px]">shield_with_house</span>
             </div>
             <div>
               <h2 className="font-headline-sm text-[16px] font-bold text-secondary leading-tight m-0">AWA Insight</h2>
-              <p className="font-label-caps text-[8px] text-on-surface-variant uppercase tracking-widest leading-none m-0">Analytics Portal</p>
+              <p className="font-label-caps text-[8px] text-on-surface-variant uppercase tracking-[0.35em] leading-none m-0">Compliance Intelligence Workspace</p>
             </div>
           </Link>
 
@@ -62,32 +62,40 @@ export default function Layout({ children }) {
         {/* Center: Main Navigation Links (Desktop) */}
         <nav className="hidden md:flex items-center gap-1">
           <Link 
-            to="/" 
-            className={`px-4 py-2 rounded-lg font-label-caps text-[11px] font-bold uppercase tracking-wider transition-all no-underline ${
-              location.pathname === '/' ? 'text-secondary bg-secondary/10' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/20'
+            to="/search" 
+            className={`px-4 py-2 rounded-full font-label-caps text-[11px] font-bold uppercase tracking-wider transition-all no-underline ${
+              location.pathname.startsWith('/search') || location.pathname.startsWith('/facility') ? 'text-secondary bg-secondary/10' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/20'
             }`}
           >
-            Facilities
+            Search
+          </Link>
+          <Link 
+            to="/dashboard" 
+            className={`px-4 py-2 rounded-full font-label-caps text-[11px] font-bold uppercase tracking-wider transition-all no-underline ${
+              location.pathname === '/dashboard' ? 'text-secondary bg-secondary/10' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/20'
+            }`}
+          >
+            Dashboard
           </Link>
           <Link 
             to="/inspectors" 
-            className={`px-4 py-2 rounded-lg font-label-caps text-[11px] font-bold uppercase tracking-wider transition-all no-underline ${
+            className={`px-4 py-2 rounded-full font-label-caps text-[11px] font-bold uppercase tracking-wider transition-all no-underline ${
               location.pathname.startsWith('/inspector') || location.pathname.startsWith('/inspectors') ? 'text-secondary bg-secondary/10' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/20'
             }`}
           >
             Inspectors
           </Link>
           <Link 
-            to="/search" 
-            className={`px-4 py-2 rounded-lg font-label-caps text-[11px] font-bold uppercase tracking-wider transition-all no-underline ${
-              location.pathname.startsWith('/search') || location.pathname.startsWith('/facility') ? 'text-secondary bg-secondary/10' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/20'
+            to="/enforcement" 
+            className={`px-4 py-2 rounded-full font-label-caps text-[11px] font-bold uppercase tracking-wider transition-all no-underline ${
+              location.pathname.startsWith('/enforcement') ? 'text-secondary bg-secondary/10' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/20'
             }`}
           >
-            Cases
+            Enforcement
           </Link>
           <Link 
             to="/document-review" 
-            className={`px-4 py-2 rounded-lg font-label-caps text-[11px] font-bold uppercase tracking-wider transition-all no-underline ${
+            className={`px-4 py-2 rounded-full font-label-caps text-[11px] font-bold uppercase tracking-wider transition-all no-underline ${
               location.pathname.startsWith('/document-review') ? 'text-secondary bg-secondary/10' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/20'
             }`}
           >
@@ -153,7 +161,7 @@ export default function Layout({ children }) {
       {mobileMenuOpen && (
         <>
           <div className="fixed inset-0 bg-black/40 z-30 md:hidden" onClick={() => setMobileMenuOpen(false)}></div>
-          <div className="md:hidden fixed top-16 left-0 right-0 bg-surface-container-lowest border-b border-outline-variant/10 p-6 flex flex-col gap-4 z-40 animate-fade-in shadow-2xl">
+          <div className="md:hidden fixed top-16 left-0 right-0 bg-surface-container-lowest/98 backdrop-blur-xl border-b border-outline-variant/10 p-6 flex flex-col gap-4 z-40 animate-fade-in shadow-2xl">
             {/* Global Search inside mobile menu */}
             <div className="flex sm:hidden items-center gap-3 px-3 py-2 bg-surface-container-low rounded-xl border border-outline-variant/20 focus-within:ring-1 focus-within:ring-secondary transition-all w-full">
               <span className="material-symbols-outlined text-on-surface-variant text-[18px]">search</span>
@@ -172,37 +180,46 @@ export default function Layout({ children }) {
               />
             </div>
             
-            <Link 
-              to="/" 
+              <Link 
+                to="/search" 
               onClick={() => setMobileMenuOpen(false)}
-              className={`px-4 py-3 rounded-lg font-label-caps text-[11px] font-bold uppercase tracking-wider transition-all no-underline ${
-                location.pathname === '/' ? 'text-secondary bg-secondary/10' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/10'
+              className={`px-4 py-3 rounded-xl font-label-caps text-[11px] font-bold uppercase tracking-wider transition-all no-underline ${
+                location.pathname.startsWith('/search') || location.pathname.startsWith('/facility') ? 'text-secondary bg-secondary/10' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/10'
               }`}
             >
-              Facilities
+              Search
+            </Link>
+            <Link 
+              to="/dashboard" 
+              onClick={() => setMobileMenuOpen(false)}
+              className={`px-4 py-3 rounded-xl font-label-caps text-[11px] font-bold uppercase tracking-wider transition-all no-underline ${
+                location.pathname === '/dashboard' ? 'text-secondary bg-secondary/10' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/10'
+              }`}
+            >
+              Dashboard
             </Link>
             <Link 
               to="/inspectors" 
               onClick={() => setMobileMenuOpen(false)}
-              className={`px-4 py-3 rounded-lg font-label-caps text-[11px] font-bold uppercase tracking-wider transition-all no-underline ${
+              className={`px-4 py-3 rounded-xl font-label-caps text-[11px] font-bold uppercase tracking-wider transition-all no-underline ${
                 location.pathname.startsWith('/inspector') || location.pathname.startsWith('/inspectors') ? 'text-secondary bg-secondary/10' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/10'
               }`}
             >
               Inspectors
             </Link>
             <Link 
-              to="/search" 
+              to="/enforcement" 
               onClick={() => setMobileMenuOpen(false)}
-              className={`px-4 py-3 rounded-lg font-label-caps text-[11px] font-bold uppercase tracking-wider transition-all no-underline ${
-                location.pathname.startsWith('/search') || location.pathname.startsWith('/facility') ? 'text-secondary bg-secondary/10' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/10'
+              className={`px-4 py-3 rounded-xl font-label-caps text-[11px] font-bold uppercase tracking-wider transition-all no-underline ${
+                location.pathname.startsWith('/enforcement') ? 'text-secondary bg-secondary/10' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/10'
               }`}
             >
-              Cases
+              Enforcement
             </Link>
             <Link 
               to="/document-review" 
               onClick={() => setMobileMenuOpen(false)}
-              className={`px-4 py-3 rounded-lg font-label-caps text-[11px] font-bold uppercase tracking-wider transition-all no-underline ${
+              className={`px-4 py-3 rounded-xl font-label-caps text-[11px] font-bold uppercase tracking-wider transition-all no-underline ${
                 location.pathname.startsWith('/document-review') ? 'text-secondary bg-secondary/10' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/10'
               }`}
             >

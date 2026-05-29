@@ -33,6 +33,22 @@ export async function getFacility(id) {
   return data;
 }
 
+export async function getFacilityDossierSummary(id) {
+  const { data, error } = await client.GET("/facilities/{facility_id}/dossier-summary", {
+    params: { path: { facility_id: id } },
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function getFacilityInspections(id) {
+  const { data, error } = await client.GET("/facilities/{facility_id}/inspections", {
+    params: { path: { facility_id: id } },
+  });
+  if (error) throw error;
+  return data;
+}
+
 // ── Inspectors ──────────────────────────────────────────────────────────────
 
 export async function getInspectors(params = {}) {
@@ -70,6 +86,50 @@ export async function generateAISummary(id) {
 export async function generateLegalMemo(id) {
   const { data, error } = await client.POST("/facilities/{facility_id}/legal-memo", {
     params: { path: { facility_id: id } },
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function getAISummary(id) {
+  const { data, error } = await client.GET("/facilities/{facility_id}/ai-summary", {
+    params: { path: { facility_id: id } },
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function getLegalMemo(id) {
+  const { data, error } = await client.GET("/facilities/{facility_id}/legal-memo", {
+    params: { path: { facility_id: id } },
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function searchViolations(params = {}) {
+  const { data, error } = await client.GET("/violations/search", { params: { query: params } });
+  if (error) throw error;
+  return data;
+}
+
+export async function searchEnforcement(params = {}) {
+  const { data, error } = await client.GET("/enforcement", { params: { query: params } });
+  if (error) throw error;
+  return data;
+}
+
+export async function getEnforcement(id) {
+  const { data, error } = await client.GET("/enforcement/{id}", {
+    params: { path: { id } },
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function getFacilityEnforcement(facilityId) {
+  const { data, error } = await client.GET("/facilities/{facility_id}/enforcement", {
+    params: { path: { facility_id: facilityId } },
   });
   if (error) throw error;
   return data;

@@ -57,6 +57,17 @@ export default function Navbar() {
         >
           Dashboard
         </Link>
+        <Link
+          to="/enforcement"
+          style={{
+            color: location.pathname === "/enforcement" ? "white" : "#a7f3d0",
+            textDecoration: location.pathname === "/enforcement" ? "underline" : "none",
+            fontWeight: "500",
+            fontSize: "0.95rem",
+          }}
+        >
+          Enforcement
+        </Link>
       </div>
     </nav>
   );

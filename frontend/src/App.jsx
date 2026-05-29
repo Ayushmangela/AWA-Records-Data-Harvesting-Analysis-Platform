@@ -6,6 +6,8 @@ import DashboardPage from "./pages/DashboardPage";
 import DocumentReviewPage from "./pages/DocumentReviewPage";
 import InspectorsDirectoryPage from "./pages/InspectorsDirectoryPage";
 import LandingPage from "./pages/LandingPage";
+import FacilityComparisonPage from "./pages/FacilityComparisonPage";
+import EnforcementListPage from "./pages/EnforcementListPage";
 import Layout from "./components/Layout";
 import ProtectedRoute from "./components/ProtectedRoute";
 import { ToastContainer } from "./components/Toast";
@@ -36,13 +38,18 @@ export default function App() {
             <ProtectedRoute>
               <Layout>
                 <Routes>
-                  <Route path="/" element={<DashboardPage />} />
+                  <Route path="/" element={<SearchPage />} />
                   <Route path="/search" element={<SearchPage />} />
+                  <Route path="/dashboard" element={<DashboardPage />} />
+                  <Route path="/enforcement" element={<EnforcementListPage />} />
+                  <Route path="/enforcement/:id" element={<EnforcementListPage />} />
+                  <Route path="/facility-comparison" element={<FacilityComparisonPage />} />
                   <Route path="/facility/:id" element={<FacilityPage />} />
+                  <Route path="/facility/:id/:tab" element={<FacilityPage />} />
                   <Route path="/inspectors" element={<InspectorsDirectoryPage />} />
                   <Route path="/inspector/:id" element={<InspectorPage />} />
                   <Route path="/document-review" element={<DocumentReviewPage />} />
-                  <Route path="*" element={<Navigate to="/" replace />} />
+                  <Route path="*" element={<Navigate to="/search" replace />} />
                 </Routes>
                 <ToastContainer />
               </Layout>

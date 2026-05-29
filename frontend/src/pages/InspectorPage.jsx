@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { getInspector } from "../services/api";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
@@ -8,6 +8,7 @@ export default function InspectorPage() {
   const [inspector, setInspector] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [showAllFacilities, setShowAllFacilities] = useState(false);
 
   useEffect(() => {
     async function load() {
@@ -31,14 +32,95 @@ export default function InspectorPage() {
     }
   }, [inspector]);
 
+  const facilitiesVisited = useMemo(() => {
+    const facilitiesMap = {};
+
+    inspector?.inspections?.forEach((ins) => {
+      if (!ins.facility_id) return;
+
+      if (!facilitiesMap[ins.facility_id]) {
+        facilitiesMap[ins.facility_id] = {
+          id: ins.facility_id,
+          name: ins.facility_name || "Unknown Facility",
+          state: ins.facility_state || "—",
+          inspections_count: 0,
+          violations_count: 0,
+          latest_inspection_date: null,
+        };
+      }
+
+      const facility = facilitiesMap[ins.facility_id];
+      facility.inspections_count += 1;
+      facility.violations_count += ins.violation_count || 0;
+
+      if (ins.inspection_date) {
+        const nextDate = new Date(ins.inspection_date);
+        const currentDate = facility.latest_inspection_date ? new Date(facility.latest_inspection_date) : null;
+        if (!currentDate || nextDate > currentDate) {
+          facility.latest_inspection_date = ins.inspection_date;
+        }
+      }
+    });
+
+    return Object.values(facilitiesMap).sort((a, b) => {
+      if (b.violations_count !== a.violations_count) return b.violations_count - a.violations_count;
+      if (b.inspections_count !== a.inspections_count) return b.inspections_count - a.inspections_count;
+
+      const aDate = a.latest_inspection_date ? new Date(a.latest_inspection_date).getTime() : 0;
+      const bDate = b.latest_inspection_date ? new Date(b.latest_inspection_date).getTime() : 0;
+      if (bDate !== aDate) return bDate - aDate;
+
+      return (a.name || "").localeCompare(b.name || "");
+    });
+  }, [inspector]);
+
+  const visibleFacilities = showAllFacilities ? facilitiesVisited : facilitiesVisited.slice(0, 8);
+
   if (loading) {
-    return <div className="p-12 font-code-data text-on-surface-variant tracking-widest">INITIALIZING_DATALINK...</div>;
+    return (
+      <div className="p-12 max-w-[1440px] mx-auto relative z-10">
+        <div className="mb-8 h-5 w-36 rounded-full bg-surface-variant/20 animate-pulse"></div>
+        <div className="bg-surface-container-lowest border border-outline-variant/10 rounded-2xl p-8 mb-8 shadow-xl animate-pulse">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+            <div className="space-y-3">
+              <div className="h-8 w-72 rounded-md bg-surface-variant/25"></div>
+              <div className="h-4 w-52 rounded-md bg-surface-variant/20"></div>
+            </div>
+            <div className="h-20 w-40 rounded-2xl bg-surface-variant/20"></div>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
+          {[1, 2, 3].map((n) => (
+            <div key={n} className="bg-surface-container-low border border-outline-variant/10 rounded-2xl p-6 animate-pulse">
+              <div className="h-3 w-32 rounded-md bg-surface-variant/20"></div>
+              <div className="mt-4 h-8 w-20 rounded-md bg-surface-variant/25"></div>
+            </div>
+          ))}
+        </div>
+        <div className="flex gap-8 flex-col lg:flex-row">
+          <div className="w-full lg:w-1/2 bg-surface-container-lowest border border-outline-variant/10 rounded-2xl p-6 shadow-xl animate-pulse">
+            <div className="h-6 w-64 rounded-md bg-surface-variant/25 mb-6"></div>
+            <div className="h-[300px] rounded-2xl bg-surface-variant/15"></div>
+          </div>
+          <div className="w-full lg:w-1/2 space-y-4">
+            <div className="h-6 w-56 rounded-md bg-surface-variant/25 animate-pulse"></div>
+            {[1, 2, 3, 4, 5].map((n) => (
+              <div key={n} className="bg-surface-container-low border border-outline-variant/10 rounded-xl p-4 animate-pulse">
+                <div className="h-4 w-48 rounded-md bg-surface-variant/25"></div>
+                <div className="mt-3 h-3 w-36 rounded-md bg-surface-variant/20"></div>
+                <div className="mt-3 h-6 w-20 rounded-full bg-surface-variant/20"></div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
   }
 
   if (error) {
     return (
       <div className="p-12">
-        <Link to="/" className="inline-flex items-center gap-2 text-on-surface-variant hover:text-secondary font-label-caps text-[12px] uppercase tracking-widest transition-colors no-underline mb-8 font-bold">
+        <Link to="/inspectors" className="inline-flex items-center gap-2 text-on-surface-variant hover:text-secondary font-label-caps text-[12px] uppercase tracking-widest transition-colors no-underline mb-8 font-bold">
           <span className="material-symbols-outlined text-[16px]">arrow_back</span> Back to search
         </Link>
         <div className="font-code-data text-error tracking-widest">{error}</div>
@@ -46,29 +128,10 @@ export default function InspectorPage() {
     );
   }
 
-  // Aggregate facilities visited from inspector's inspections
-  const facilitiesMap = {};
-  inspector.inspections?.forEach((ins) => {
-    if (!ins.facility_id) return;
-    if (!facilitiesMap[ins.facility_id]) {
-      facilitiesMap[ins.facility_id] = {
-        id: ins.facility_id,
-        name: ins.facility_name || "Unknown Facility",
-        state: ins.facility_state || "—",
-        inspections_count: 0,
-        violations_count: 0,
-      };
-    }
-    facilitiesMap[ins.facility_id].inspections_count += 1;
-    facilitiesMap[ins.facility_id].violations_count += ins.violation_count || 0;
-  });
-
-  const facilitiesVisited = Object.values(facilitiesMap).sort((a, b) => b.violations_count - a.violations_count);
-
   return (
     <div className="p-12 max-w-[1440px] mx-auto relative z-10">
       
-      <Link to="/" className="inline-flex items-center gap-2 text-on-surface-variant hover:text-secondary font-label-caps text-[12px] uppercase tracking-widest transition-colors no-underline mb-8 font-bold">
+      <Link to="/inspectors" className="inline-flex items-center gap-2 text-on-surface-variant hover:text-secondary font-label-caps text-[12px] uppercase tracking-widest transition-colors no-underline mb-8 font-bold">
         <span className="material-symbols-outlined text-[16px]">arrow_back</span> Back to search
       </Link>
 
@@ -151,11 +214,27 @@ export default function InspectorPage() {
 
         {/* Right Column: Facilities */}
         <div className="w-full lg:w-1/2">
-          <h2 className="font-headline-md text-[24px] font-bold text-on-surface mb-6">Facilities Inspected</h2>
+          <div className="mb-6 flex items-end justify-between gap-4">
+            <div>
+              <h2 className="font-headline-md text-[24px] font-bold text-on-surface mb-2">Facilities Inspected</h2>
+              <p className="font-code-data text-[11px] text-on-surface-variant tracking-widest uppercase">
+                Showing {visibleFacilities.length} of {facilitiesVisited.length} facilities inspected
+              </p>
+            </div>
+            {facilitiesVisited.length > 8 && (
+              <button
+                type="button"
+                onClick={() => setShowAllFacilities((value) => !value)}
+                className="bg-surface-variant/30 hover:bg-surface-variant/45 text-on-surface-variant hover:text-on-surface px-4 py-2 rounded-lg font-label-caps text-[10px] font-bold uppercase tracking-[0.24em] transition-colors"
+              >
+                {showAllFacilities ? "Show Top 8" : `Show All (${facilitiesVisited.length})`}
+              </button>
+            )}
+          </div>
           
           {facilitiesVisited.length > 0 ? (
             <div className="flex flex-col gap-4">
-              {facilitiesVisited.map((fac) => (
+              {visibleFacilities.map((fac) => (
                 <div key={fac.id} className="bg-surface-container-low border border-outline-variant/10 rounded-xl p-4 flex justify-between items-center hover:bg-surface-container-highest transition-colors">
                   <div>
                     <Link to={`/facility/${fac.id}`} className="font-headline-sm text-[16px] font-bold text-secondary hover:text-tertiary transition-colors no-underline">
@@ -163,12 +242,22 @@ export default function InspectorPage() {
                     </Link>
                     <p className="font-code-data text-[12px] text-on-surface-variant mt-1">
                       State: <strong className="text-on-surface">{fac.state}</strong> • Visited <strong className="text-on-surface">{fac.inspections_count}</strong> time{fac.inspections_count !== 1 ? "s" : ""}
+                      {fac.latest_inspection_date ? (
+                        <>
+                          {' '}• Last inspected <strong className="text-on-surface">{fac.latest_inspection_date}</strong>
+                        </>
+                      ) : null}
                     </p>
                   </div>
                   <div>
-                    <span className={`px-3 py-1 rounded-full font-label-caps text-[10px] font-bold ${fac.violations_count > 5 ? 'bg-error/10 text-error border border-error/20' : fac.violations_count >= 2 ? 'bg-secondary/10 text-secondary border border-secondary/20' : 'bg-tertiary/10 text-tertiary border border-tertiary/20'}`}>
-                      {fac.violations_count} VIOLATION{fac.violations_count !== 1 ? 'S' : ''}
-                    </span>
+                    <div className="flex flex-col items-end gap-2">
+                      <span className={`px-3 py-1 rounded-full font-label-caps text-[10px] font-bold ${fac.violations_count > 5 ? 'bg-error/10 text-error border border-error/20' : fac.violations_count >= 2 ? 'bg-secondary/10 text-secondary border border-secondary/20' : 'bg-tertiary/10 text-tertiary border border-tertiary/20'}`}>
+                        {fac.violations_count} VIOLATION{fac.violations_count !== 1 ? 'S' : ''}
+                      </span>
+                      <span className="font-label-caps text-[9px] text-on-surface-variant uppercase tracking-[0.24em]">
+                        {fac.violations_count > 5 ? "High risk" : fac.violations_count >= 2 ? "Watchlist" : "Stable"}
+                      </span>
+                    </div>
                   </div>
                 </div>
               ))}

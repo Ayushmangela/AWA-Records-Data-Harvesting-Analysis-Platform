@@ -12,7 +12,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from app import models  # noqa: F401
 from app.database import engine
 from app.limiter import limiter
-from app.routers import dashboard, documents, facilities, inspectors, violations
+from app.routers import dashboard, documents, enforcement, facilities, inspectors, violations
 from app.services.scheduler import start_scheduler, stop_scheduler
 
 # ── Structured JSON logging ──────────────────────────────────────────────────
@@ -61,6 +61,33 @@ app.add_middleware(SlowAPIMiddleware)
 cors_origins_str = os.environ.get("CORS_ALLOWED_ORIGINS", "")
 allowed_origins = [o.strip() for o in cors_origins_str.split(",") if o.strip()]
 
+
+def _expand_loopback_origins(origins: list[str]) -> list[str]:
+    expanded: list[str] = []
+    seen: set[str] = set()
+
+    def add(origin: str) -> None:
+        if origin and origin not in seen:
+            seen.add(origin)
+            expanded.append(origin)
+
+    for origin in origins:
+        add(origin)
+        if "localhost" in origin:
+            add(origin.replace("localhost", "127.0.0.1"))
+        elif "127.0.0.1" in origin:
+            add(origin.replace("127.0.0.1", "localhost"))
+
+    if any("localhost" in origin or "127.0.0.1" in origin for origin in origins):
+        for port in (4173, 4174, 5173, 5174):
+            add(f"http://localhost:{port}")
+            add(f"http://127.0.0.1:{port}")
+
+    return expanded
+
+
+allowed_origins = _expand_loopback_origins(allowed_origins)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
@@ -74,6 +101,7 @@ app.include_router(inspectors.router)
 app.include_router(dashboard.router)
 app.include_router(violations.router)
 app.include_router(documents.router)
+app.include_router(enforcement.router)
 
 
 @app.get("/")

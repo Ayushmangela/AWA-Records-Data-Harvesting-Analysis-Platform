@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import case, desc, func
+from sqlalchemy import case, desc, func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.auth import require_api_key
@@ -7,7 +7,7 @@ from app.database import get_db
 from app.limiter import limiter
 from app.models import Facility, Inspection
 from app.schemas import InspectorDetailOut, InspectorListOut
-from app.services.risk_engine import calculate_inspector_anomaly
+from app.services.risk_engine import calculate_inspector_anomaly, calculate_inspector_anomaly_bulk
 
 router = APIRouter(
     prefix="/inspectors", tags=["inspectors"], dependencies=[Depends(require_api_key)]
@@ -18,6 +18,7 @@ router = APIRouter(
 @limiter.limit("60/minute")
 def list_inspectors(
     request: Request,
+    name: str | None = None,
     state: str | None = None,
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -42,6 +43,17 @@ def list_inspectors(
             Facility.state.ilike(state)
         )
 
+    if name:
+        if len(name.strip()) < 3:
+            return {"total": 0, "limit": limit, "offset": offset, "results": []}
+        name_pattern = f"%{name.strip()}%"
+        query = query.filter(
+            or_(
+                Inspection.inspector_name.ilike(name_pattern),
+                Inspection.inspector_id.ilike(name_pattern),
+            )
+        )
+
     # Calculate total distinct inspector_ids count
     total_query = db.query(Inspection.inspector_id).filter(
         Inspection.inspector_id.isnot(None), Inspection.inspector_id != ""
@@ -49,6 +61,14 @@ def list_inspectors(
     if state:
         total_query = total_query.join(Facility, Facility.id == Inspection.facility_id).filter(
             Facility.state.ilike(state)
+        )
+    if name:
+        name_pattern = f"%{name.strip()}%"
+        total_query = total_query.filter(
+            or_(
+                Inspection.inspector_name.ilike(name_pattern),
+                Inspection.inspector_id.ilike(name_pattern),
+            )
         )
     total = total_query.distinct().count()
 
@@ -60,9 +80,10 @@ def list_inspectors(
         .all()
     )
 
+    anomaly_map = calculate_inspector_anomaly_bulk(db, [row.inspector_id for row in rows])
     results = []
     for row in rows:
-        anomaly_stats = calculate_inspector_anomaly(db, row.inspector_id)
+        anomaly_stats = anomaly_map.get(row.inspector_id) or calculate_inspector_anomaly(db, row.inspector_id)
         results.append(
             {
                 "inspector_id": row.inspector_id,

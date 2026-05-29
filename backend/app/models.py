@@ -7,6 +7,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -47,6 +48,30 @@ class Facility(Base):
     licensed_animal_limit = Column(Integer)
 
     inspections = relationship("Inspection", back_populates="facility")
+    enforcement_actions = relationship("EnforcementAction", back_populates="facility", cascade="all, delete-orphan", order_by="desc(EnforcementAction.action_date)")
+
+
+class EnforcementAction(Base):
+    __tablename__ = "enforcement_actions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    facility_id = Column(Integer, ForeignKey("facilities.id", ondelete="CASCADE"), nullable=True, index=True)
+    certificate = Column(String, nullable=True, index=True)
+    action_type = Column(String, nullable=False)
+    action_date = Column(Date, nullable=False)
+    outcome = Column(String, nullable=True)
+    penalty_amount = Column(Float, nullable=True)
+    source_pdf = Column(String, nullable=True)
+    source_pdf_path = Column(String, nullable=True, index=True)
+    summary = Column(Text, nullable=True)
+    pdf_downloaded = Column(Boolean, default=False, nullable=False)
+    pdf_processed = Column(Boolean, default=False, nullable=False)
+    ocr_status = Column(Enum(ProcessingStatus, native_enum=False), default=ProcessingStatus.PENDING, index=True)
+    extracted_text = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now_utc)
+
+    facility = relationship("Facility", back_populates="enforcement_actions")
+
 
 
 class Inspection(Base):

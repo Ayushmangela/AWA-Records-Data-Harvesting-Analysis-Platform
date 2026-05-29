@@ -1,302 +1,565 @@
-import React, { useEffect, useRef, useState } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
-import { searchFacilities } from "../services/api";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Legend,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+  Area,
+  AreaChart,
+} from "recharts";
+import { getDashboardStats } from "../services/api";
+import {
+  ComplianceIndicator,
+  DossierSection,
+  InvestigationTable,
+  MetricPanel,
+  TimelinePanel,
+} from "../components/IntelligenceSystem";
+
+const CACHE_KEY = "dashboard-overview-cache:v2";
+const CACHE_TTL_MS = 10 * 60 * 1000;
+const PIE_COLORS = ["#e9c349", "#0ea5a4", "#f97316", "#ef4444", "#a855f7", "#22c55e"];
+
+function formatNumber(value) {
+  return new Intl.NumberFormat("en-US").format(Number(value || 0));
+}
+
+function formatPercent(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
+  const rounded = Math.round(Number(value) * 10) / 10;
+  return `${rounded > 0 ? "+" : ""}${rounded.toFixed(1)}%`;
+}
 
 function formatDate(value) {
   if (!value) return "—";
-  const d = new Date(value);
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+function formatMonth(value) {
+  if (!value) return "—";
+  const parsed = new Date(`${value}-01T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+}
+
+function formatDateTime(value) {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+function readCache() {
+  try {
+    const raw = sessionStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.timestamp || Date.now() - parsed.timestamp > CACHE_TTL_MS) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeCache(data) {
+  try {
+    sessionStorage.setItem(CACHE_KEY, JSON.stringify({ timestamp: Date.now(), data }));
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
+function trendTone(change) {
+  if (change === null || change === undefined) return "neutral";
+  if (change > 0) return "critical";
+  if (change < 0) return "primary";
+  return "neutral";
+}
+
+function TrendValue({ change, delta }) {
+  if (change === null || change === undefined) {
+    return <span className="text-on-surface-variant">All time</span>;
+  }
+
+  const positive = change > 0;
+  return (
+    <span className={positive ? "text-error" : "text-secondary"}>
+      {positive ? "▲" : "▼"} {formatPercent(Math.abs(change))} {delta >= 0 ? "higher" : "lower"}
+    </span>
+  );
+}
+
+function SectionSkeleton() {
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4">
+        {Array.from({ length: 6 }).map((_, index) => (
+          <div key={index} className="rounded-3xl border border-white/5 bg-surface-container-low p-5 animate-pulse">
+            <div className="h-3 w-24 rounded-full bg-surface-variant/20"></div>
+            <div className="mt-4 h-8 w-28 rounded-md bg-surface-variant/25"></div>
+            <div className="mt-3 h-3 w-20 rounded-md bg-surface-variant/20"></div>
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <div className="rounded-[28px] border border-white/5 bg-surface-container-low p-6 animate-pulse h-[420px]"></div>
+        <div className="rounded-[28px] border border-white/5 bg-surface-container-low p-6 animate-pulse h-[420px]"></div>
+      </div>
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        <div className="rounded-[28px] border border-white/5 bg-surface-container-low p-6 animate-pulse h-[340px]"></div>
+        <div className="rounded-[28px] border border-white/5 bg-surface-container-low p-6 animate-pulse h-[340px]"></div>
+        <div className="rounded-[28px] border border-white/5 bg-surface-container-low p-6 animate-pulse h-[340px]"></div>
+      </div>
+    </div>
+  );
 }
 
 export default function DashboardPage() {
   const glowRef = useRef(null);
-  const location = useLocation();
-  const navigate = useNavigate();
-  
-  const [facilities, setFacilities] = useState([]);
+  const hasLoadedRef = useRef(false);
+  const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  
-  // Filters
-  const [searchTerm, setSearchTerm] = useState("");
-  const [stateFilter, setStateFilter] = useState("All States");
-  const [speciesFilter, setSpeciesFilter] = useState("");
-  const [licenseTypeFilter, setLicenseTypeFilter] = useState("All Types");
-  const [showActiveOnly, setShowActiveOnly] = useState(false);
-  const [sortBy, setSortBy] = useState("violations_desc");
-  
-  const [totalCount, setTotalCount] = useState(0);
-  const [pageIndex, setPageIndex] = useState(0);
-  const [cursors, setCursors] = useState([null]);
-  const [nextCursor, setNextCursor] = useState(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
 
   useEffect(() => {
     const handleMouseMove = (e) => {
-      if (glowRef.current) {
-        const x = (e.clientX / window.innerWidth) * 100;
-        const y = (e.clientY / window.innerHeight) * 100;
-        glowRef.current.style.background = `radial-gradient(circle at ${x}% ${y}%, rgba(233, 195, 73, 0.1) 0%, transparent 60%)`;
-      }
+      if (!glowRef.current) return;
+      const x = (e.clientX / window.innerWidth) * 100;
+      const y = (e.clientY / window.innerHeight) * 100;
+      glowRef.current.style.background = `radial-gradient(circle at ${x}% ${y}%, rgba(233, 195, 73, 0.1) 0%, transparent 60%)`;
     };
-    
-    document.addEventListener('mousemove', handleMouseMove);
+
+    document.addEventListener("mousemove", handleMouseMove);
+    return () => document.removeEventListener("mousemove", handleMouseMove);
+  }, []);
+
+  useEffect(() => {
+    if (hasLoadedRef.current) return;
+    hasLoadedRef.current = true;
+
+    const cached = readCache();
+    if (cached?.data) {
+      setData(cached.data);
+      setLastUpdatedAt(cached.timestamp);
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function load() {
+      try {
+        const response = await getDashboardStats();
+        if (cancelled) return;
+        setData(response);
+        setLastUpdatedAt(Date.now());
+        writeCache(response);
+      } catch (error) {
+        if (!cancelled) {
+          console.error(error);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    load();
+
     return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
+      cancelled = true;
     };
   }, []);
 
-  const loadData = async (currentPage = pageIndex, currentCursors = cursors, searchTermOverride) => {
-    setLoading(true);
-    try {
-      const params = {
-        limit: 20,
-        sort_by: sortBy
-      };
-      
-      const term = searchTermOverride !== undefined ? searchTermOverride : searchTerm;
-      if (term) params.name = term;
-      if (stateFilter && stateFilter !== "All States") params.state = stateFilter;
-      if (speciesFilter) params.species = speciesFilter;
-      if (licenseTypeFilter && licenseTypeFilter !== "All Types") params.license_type = licenseTypeFilter;
-      if (showActiveOnly) params.has_violations = true;
-      
-      const cursor = currentCursors[currentPage];
-      if (cursor) {
-        params.cursor = cursor;
-      } else {
-        params.offset = currentPage * 20;
-      }
+  const kpis = data?.kpi_trends || {};
+  const severityData = useMemo(
+    () =>
+      Object.entries(data?.violations_overview?.severity_distribution || {}).map(([label, count]) => ({
+        label,
+        count,
+      })),
+    [data],
+  );
 
-      if (currentPage === 0) {
-        params.include_total = true;
-      }
-      
-      const res = await searchFacilities(params);
-      setFacilities(res.results || []);
-      setNextCursor(res.cursor || null);
-      if (res.total !== undefined && res.total !== null) {
-        setTotalCount(res.total);
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const directIndirectData = useMemo(() => {
+    const summary = data?.violations_overview?.direct_vs_indirect || {};
+    return [
+      { label: "Direct/Critical", count: summary.direct_or_critical || 0 },
+      { label: "Indirect/Teachable", count: summary.indirect_or_teachable || 0 },
+    ];
+  }, [data]);
 
-  useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    const nameParam = params.get("name") || "";
-    setSearchTerm(nameParam);
-    setPageIndex(0);
-    setCursors([null]);
-    loadData(0, [null], nameParam);
-  }, [location.search, sortBy, stateFilter, licenseTypeFilter, showActiveOnly]);
+  const categoryData = useMemo(
+    () => (data?.violations_overview?.top_categories || []).map((item) => ({ label: item.category, count: item.count })),
+    [data],
+  );
 
-  const handleSearch = (e) => {
-    e.preventDefault();
-    if (searchTerm.trim()) {
-      navigate(`/?name=${encodeURIComponent(searchTerm.trim())}`);
-    } else {
-      navigate(`/`);
-    }
-  };
+  const penaltyTrendData = useMemo(
+    () => (data?.enforcement_overview?.penalty_trend || []).map((item) => ({
+      month: formatMonth(item.month),
+      count: item.count,
+      penalty_total: item.penalty_total,
+    })),
+    [data],
+  );
 
-  const handleNextPage = () => {
-    if (!nextCursor && facilities.length < 20) return;
-    const newCursors = [...cursors];
-    newCursors[pageIndex + 1] = nextCursor;
-    setCursors(newCursors);
-    const nextIdx = pageIndex + 1;
-    setPageIndex(nextIdx);
-    loadData(nextIdx, newCursors);
-  };
+  const recentInspectionItems = useMemo(
+    () =>
+      (data?.recent_activity || [])
+        .filter((item) => item.type === "inspection")
+        .slice(0, 5)
+        .map((item) => ({
+          title: item.title,
+          meta: formatDate(item.date),
+          body: item.detail,
+          tone: item.tone || "primary",
+        })),
+    [data],
+  );
 
-  const handlePrevPage = () => {
-    if (pageIndex === 0) return;
-    const prevIdx = pageIndex - 1;
-    setPageIndex(prevIdx);
-    loadData(prevIdx, cursors);
-  };
+  const recentActivityItems = useMemo(
+    () =>
+      (data?.recent_activity || []).map((item) => ({
+        title: item.title,
+        meta: formatDateTime(item.date),
+        body: item.detail,
+        tone: item.tone || "primary",
+      })),
+    [data],
+  );
+
+  const topInspectorsRows = (data?.inspector_activity || []).map((row) => ({ ...row, key: row.inspector_id }));
+  const recentEnforcementRows = (data?.enforcement_overview?.recent_enforcement_actions || []).map((row) => ({ ...row, key: row.id }));
+  const topViolationsRows = (data?.facility_risk_queue?.high_violation_facilities || []).map((row) => ({ ...row, key: row.id }));
+  const directCriticalRows = (data?.facility_risk_queue?.direct_critical_facilities || []).map((row) => ({ ...row, key: row.id }));
+  const enforcementHistoryRows = (data?.facility_risk_queue?.facilities_with_enforcement_actions || []).map((row) => ({ ...row, key: row.id }));
 
   return (
     <>
-      {/* Background Atmospheric Glow */}
-      <div className="fixed inset-0 pointer-events-none opacity-5 z-0">
+      <div className="fixed inset-0 pointer-events-none opacity-10 z-0">
         <div ref={glowRef} className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-secondary/30 via-transparent to-transparent"></div>
       </div>
-      
-      <div className="p-12 max-w-[1440px] mx-auto relative z-10">
-        
-        {/* Header Section */}
-        <section className="mb-12">
-          <div className="flex flex-col md:flex-row gap-8 items-end justify-between">
-            <div className="flex-1">
-              <h3 className="font-headline-lg text-[40px] leading-[48px] font-bold text-on-surface mb-3 tracking-[-0.02em]">AWA Harvest & Analytics Portal</h3>
-              <p className="font-body-lg text-[18px] text-on-surface-variant max-w-2xl leading-[28px]">
-                Advanced legal research and violation tracking platform for comprehensive Animal Welfare Act facility inspections and regulatory compliance.
+
+      <div className="investigative-shell relative z-10">
+        <header className="mb-8 rounded-[28px] border border-white/5 bg-surface-container-low px-6 py-5 lg:px-8">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+            <div>
+              <div className="section-kicker mb-3">COMMAND CENTER</div>
+              <h1 className="font-headline-lg text-[clamp(2rem,3vw,3rem)] leading-tight font-bold text-on-surface max-w-4xl">
+                Compliance and investigation dashboard.
+              </h1>
+              <p className="mt-3 max-w-3xl text-[16px] leading-[26px] text-on-surface-variant">
+                Real counts, live enforcement activity, recent inspections, and risk queues derived directly from platform records.
               </p>
             </div>
-            <div className="flex items-center gap-2 text-secondary font-label-caps text-[11px] uppercase tracking-wider font-bold">
-              <span className="material-symbols-outlined text-[16px]">history</span>
-              <span>Last database update: Today, 04:15 AM EST</span>
+            <div className="flex items-center gap-3 text-[11px] uppercase tracking-[0.22em] text-on-surface-variant">
+              <span className="font-bold text-secondary">Last updated</span>
+              <span>{lastUpdatedAt ? formatDateTime(lastUpdatedAt) : "—"}</span>
             </div>
           </div>
-          
-          {/* Filter Bar */}
-          <form onSubmit={handleSearch} className="mt-10 glass-card rounded-2xl p-8 border border-white/5 shadow-2xl relative overflow-hidden">
-            <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-6">
-              <div className="flex flex-col gap-2">
-                <label className="font-label-caps text-[10px] text-secondary uppercase tracking-widest font-bold">Facility Name</label>
-                <input value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} className="bg-surface-container-lowest border border-outline-variant/20 rounded-lg px-4 py-2.5 text-body-md text-on-surface focus:ring-1 focus:ring-secondary focus:border-secondary transition-all outline-none" placeholder="Search facility name..." type="text"/>
-              </div>
-              <div className="flex flex-col gap-2">
-                <label className="font-label-caps text-[10px] text-secondary uppercase tracking-widest font-bold">State</label>
-                <select value={stateFilter} onChange={e=>setStateFilter(e.target.value)} className="bg-surface-container-lowest border border-outline-variant/20 rounded-lg px-4 py-2.5 text-body-md text-on-surface focus:ring-1 focus:ring-secondary focus:border-secondary appearance-none outline-none">
-                  <option>All States</option>
-                  <option>CA</option>
-                  <option>OR</option>
-                  <option>FL</option>
-                  <option>TX</option>
-                  <option>NY</option>
-                </select>
-              </div>
-              <div className="flex flex-col gap-2">
-                <label className="font-label-caps text-[10px] text-secondary uppercase tracking-widest font-bold">Species Search</label>
-                <input value={speciesFilter} onChange={e=>setSpeciesFilter(e.target.value)} className="bg-surface-container-lowest border border-outline-variant/20 rounded-lg px-4 py-2.5 text-body-md text-on-surface focus:ring-1 focus:ring-secondary focus:border-secondary outline-none transition-all" placeholder="e.g. rabbit, dog..." type="text"/>
-              </div>
-              <div className="flex flex-col gap-2">
-                <label className="font-label-caps text-[10px] text-secondary uppercase tracking-widest font-bold">License Type</label>
-                <select value={licenseTypeFilter} onChange={e=>setLicenseTypeFilter(e.target.value)} className="bg-surface-container-lowest border border-outline-variant/20 rounded-lg px-4 py-2.5 text-body-md text-on-surface focus:ring-1 focus:ring-secondary focus:border-secondary appearance-none outline-none">
-                  <option>All Types</option>
-                  <option>A</option>
-                  <option>B</option>
-                  <option>C</option>
-                  <option>R</option>
-                </select>
-              </div>
-              <div className="flex flex-col gap-2">
-                <label className="font-label-caps text-[10px] text-secondary uppercase tracking-widest font-bold">Violation Severity</label>
-                <select className="bg-surface-container-lowest border border-outline-variant/20 rounded-lg px-4 py-2.5 text-body-md text-on-surface focus:ring-1 focus:ring-secondary focus:border-secondary appearance-none outline-none">
-                  <option>All Severities</option>
-                  <option>Critical Only</option>
-                  <option>Direct Only</option>
-                </select>
-              </div>
-              <div className="flex flex-col gap-2">
-                <label className="font-label-caps text-[10px] text-secondary uppercase tracking-widest font-bold">Sort By</label>
-                <select value={sortBy} onChange={e=>setSortBy(e.target.value)} className="bg-surface-container-lowest border border-outline-variant/20 rounded-lg px-4 py-2.5 text-body-md text-on-surface focus:ring-1 focus:ring-secondary focus:border-secondary appearance-none outline-none">
-                  <option value="violations_desc">Most Violations</option>
-                  <option value="name_asc">Alphabetical</option>
-                </select>
-              </div>
-            </div>
-            <div className="mt-8 pt-8 border-t border-outline-variant/10 flex items-center justify-between">
-              <label className="flex items-center gap-3 cursor-pointer group" onClick={(e) => { e.preventDefault(); setShowActiveOnly(!showActiveOnly); }}>
-                <div className={`w-10 h-5 rounded-full relative transition-all duration-300 ${showActiveOnly ? 'bg-secondary' : 'bg-surface-variant'}`}>
-                  <div className={`absolute left-1 top-1 w-3 h-3 rounded-full transition-all duration-300 ${showActiveOnly ? 'bg-on-secondary translate-x-5' : 'bg-on-surface'}`}></div>
-                </div>
-                <span className="font-label-caps text-[11px] font-bold text-on-surface uppercase tracking-wider">Show active violations only</span>
-              </label>
-              <button type="submit" className="bg-secondary hover:brightness-110 text-on-secondary font-bold px-10 py-3 rounded-xl flex items-center gap-2 transition-all shadow-lg active:scale-95 uppercase font-label-caps text-[12px] tracking-widest">
-                <span className="material-symbols-outlined">search</span>
-                Execute Search
-              </button>
-            </div>
-          </form>
-        </section>
+        </header>
 
-        {/* Results Count & Pagination */}
-        <div className="flex items-center justify-between mb-8">
-          <p className="font-body-md text-on-surface-variant">Showing <span className="text-secondary font-bold">{facilities.length}</span> of {totalCount === null || totalCount === 0 && facilities.length > 0 ? "many" : totalCount} facilities (Page {pageIndex + 1})</p>
-          <div className="flex items-center gap-2">
-            <button 
-              onClick={handlePrevPage}
-              disabled={pageIndex === 0}
-              className={`p-2 border border-outline-variant/10 rounded-lg transition-all ${pageIndex === 0 ? "opacity-50 cursor-not-allowed" : "text-on-surface-variant hover:bg-surface-variant/30 hover:text-on-surface"}`}
-            >
-              <span className="material-symbols-outlined">chevron_left</span>
-            </button>
-            <button 
-              onClick={handleNextPage}
-              disabled={(!nextCursor && facilities.length < 20) || facilities.length === 0}
-              className={`p-2 border border-outline-variant/10 rounded-lg transition-all ${(!nextCursor && facilities.length < 20) || facilities.length === 0 ? "opacity-50 cursor-not-allowed" : "text-on-surface-variant hover:bg-surface-variant/30 hover:text-on-surface"}`}
-            >
-              <span className="material-symbols-outlined">chevron_right</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Grid of Cards */}
         {loading ? (
-          <div className="py-20 text-center font-code-data text-secondary tracking-widest uppercase">
-            Querying Database...
-          </div>
-        ) : facilities.length === 0 ? (
-          <div className="py-20 text-center font-code-data text-on-surface-variant tracking-widest uppercase border border-outline-variant/10 rounded-2xl bg-surface-container-low">
-            No facilities found matching your criteria.
-          </div>
+          <SectionSkeleton />
         ) : (
-          <section className="grid grid-cols-1 md:grid-cols-2 gap-8">
-            {facilities.map((fac) => {
-              const hasViolations = fac.total_violations > 0;
-              return (
-                <Link key={fac.id} to={`/facility/${fac.id}`} className="bg-surface-container-low border border-outline-variant/10 rounded-2xl overflow-hidden hover:border-secondary/30 transition-all group flex flex-col cursor-pointer shadow-xl no-underline">
-                  <div className={`h-1.5 ${hasViolations ? 'bg-error' : 'bg-secondary'}`}></div>
-                  <div className="p-8 flex flex-col gap-6 flex-1">
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <h4 className="font-headline-md text-[28px] font-bold text-on-surface leading-tight group-hover:text-secondary transition-colors">{fac.name}</h4>
-                        <p className="font-code-data text-[13px] text-on-surface-variant mt-2 uppercase tracking-tight">Certificate: {fac.certificate_number}</p>
-                      </div>
-                      {hasViolations ? (
-                        <div className="bg-error/10 text-error border border-error/20 px-3 py-1.5 rounded-lg font-label-caps text-[11px] flex items-center gap-1.5 uppercase font-bold">
-                          <span className="material-symbols-outlined text-[16px]" style={{ fontVariationSettings: "'FILL' 1" }}>warning</span>
-                          {fac.total_violations} VIOLATIONS
-                        </div>
+          <div className="space-y-8">
+            <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6 gap-4">
+              <MetricPanel label="Total Facilities" value={formatNumber(data?.total_facilities)} detail="All facilities in the platform" tone="primary" />
+              <MetricPanel
+                label="Total Inspections"
+                value={formatNumber(data?.total_inspections)}
+                detail={<TrendValue change={kpis.inspections?.change} delta={kpis.inspections?.delta} />}
+                tone={trendTone(kpis.inspections?.change)}
+              />
+              <MetricPanel
+                label="Total Violations"
+                value={formatNumber(data?.total_violations)}
+                detail={<TrendValue change={kpis.violations?.change} delta={kpis.violations?.delta} />}
+                tone={trendTone(kpis.violations?.change)}
+              />
+              <MetricPanel
+                label="Total Enforcement Actions"
+                value={formatNumber(data?.total_enforcement_actions)}
+                detail={<TrendValue change={kpis.enforcement_actions?.change} delta={kpis.enforcement_actions?.delta} />}
+                tone={trendTone(kpis.enforcement_actions?.change)}
+              />
+              <MetricPanel label="Total Inspectors" value={formatNumber(data?.total_inspectors)} detail="Unique inspector IDs observed" tone="primary" />
+              <MetricPanel
+                label="OCR Processed Documents"
+                value={formatNumber(data?.ocr_processed_documents)}
+                detail={<TrendValue change={kpis.ocr_processed_documents?.change} delta={kpis.ocr_processed_documents?.delta} />}
+                tone={trendTone(kpis.ocr_processed_documents?.change)}
+              />
+            </section>
+
+            <section className="grid grid-cols-1 xl:grid-cols-[1.2fr_0.8fr] gap-6">
+              <DossierSection label="RECENT ACTIVITY" title="Operational timeline" subtitle="Latest inspections, violations, enforcement actions, and document intake events in one chronological feed.">
+                <TimelinePanel items={recentActivityItems} />
+              </DossierSection>
+
+              <DossierSection label="VIOLATIONS OVERVIEW" title="Severity and category mix" subtitle="Charts are driven entirely by violation rows and mapped sections.">
+                <div className="grid grid-cols-1 gap-6">
+                  <div className="rounded-3xl border border-white/5 bg-surface-container-low p-4">
+                    <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.22em] text-on-surface-variant">Violations by severity</div>
+                    <div className="h-[220px]">
+                      {severityData.length > 0 ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={severityData} margin={{ top: 10, right: 8, left: 0, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" vertical={false} />
+                            <XAxis dataKey="label" stroke="rgba(255,255,255,0.5)" tickLine={false} axisLine={false} fontSize={11} />
+                            <YAxis stroke="rgba(255,255,255,0.5)" tickLine={false} axisLine={false} fontSize={11} />
+                            <Tooltip contentStyle={{ backgroundColor: "#111827", borderColor: "rgba(255,255,255,0.1)", borderRadius: "12px" }} />
+                            <Bar dataKey="count" radius={[8, 8, 0, 0]} fill="#e9c349" />
+                          </BarChart>
+                        </ResponsiveContainer>
                       ) : (
-                        <div className="bg-secondary/10 text-secondary border border-secondary/20 px-3 py-1.5 rounded-lg font-label-caps text-[11px] flex items-center gap-1.5 uppercase font-bold">
-                          <span className="material-symbols-outlined text-[16px]" style={{ fontVariationSettings: "'FILL' 1" }}>info</span>
-                          0 VIOLATIONS
-                        </div>
+                        <div className="flex h-full items-center justify-center text-sm text-on-surface-variant">No severity data</div>
                       )}
                     </div>
-                    <div className="grid grid-cols-2 gap-6 border-y border-white/5 py-6">
-                      <div>
-                        <p className="font-label-caps font-bold text-[10px] text-on-surface-variant uppercase tracking-widest mb-1">Location</p>
-                        <p className="text-on-surface font-medium">{fac.city}, {fac.state}</p>
-                      </div>
-                      <div>
-                        <p className="font-label-caps font-bold text-[10px] text-on-surface-variant uppercase tracking-widest mb-1">License Type</p>
-                        <p className="text-on-surface font-medium">{fac.license_type || "N/A"}</p>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="rounded-3xl border border-white/5 bg-surface-container-low p-4">
+                      <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.22em] text-on-surface-variant">Direct vs indirect</div>
+                      <div className="h-[220px]">
+                        {directIndirectData.some((item) => item.count > 0) ? (
+                          <ResponsiveContainer width="100%" height="100%">
+                            <PieChart>
+                              <Pie data={directIndirectData} dataKey="count" nameKey="label" innerRadius={54} outerRadius={78} paddingAngle={4}>
+                                {directIndirectData.map((entry, index) => (
+                                  <Cell key={entry.label} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                                ))}
+                              </Pie>
+                              <Tooltip contentStyle={{ backgroundColor: "#111827", borderColor: "rgba(255,255,255,0.1)", borderRadius: "12px" }} />
+                              <Legend />
+                            </PieChart>
+                          </ResponsiveContainer>
+                        ) : (
+                          <div className="flex h-full items-center justify-center text-sm text-on-surface-variant">No direct/indirect split</div>
+                        )}
                       </div>
                     </div>
-                    <div className="flex items-center justify-between mt-auto pt-4">
-                      <div className="flex flex-col">
-                        <p className="font-label-caps font-bold text-[10px] text-on-surface-variant uppercase mb-1">Last Inspected</p>
-                        <p className="text-secondary font-bold font-code-data text-[13px]">
-                          {fac.last_inspection_date ? formatDate(fac.last_inspection_date) : "—"}
-                        </p>
+
+                    <div className="rounded-3xl border border-white/5 bg-surface-container-low p-4">
+                      <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.22em] text-on-surface-variant">Top violation categories</div>
+                      <div className="h-[220px]">
+                        {categoryData.length > 0 ? (
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={categoryData} layout="vertical" margin={{ top: 0, right: 8, left: 30, bottom: 0 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" horizontal={false} />
+                              <XAxis type="number" stroke="rgba(255,255,255,0.5)" tickLine={false} axisLine={false} fontSize={11} />
+                              <YAxis type="category" dataKey="label" stroke="rgba(255,255,255,0.5)" tickLine={false} axisLine={false} fontSize={11} width={90} />
+                              <Tooltip contentStyle={{ backgroundColor: "#111827", borderColor: "rgba(255,255,255,0.1)", borderRadius: "12px" }} />
+                              <Bar dataKey="count" radius={[0, 8, 8, 0]} fill="#0ea5a4" />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        ) : (
+                          <div className="flex h-full items-center justify-center text-sm text-on-surface-variant">No category data</div>
+                        )}
                       </div>
-                      <button className="bg-surface-container-highest hover:bg-secondary text-on-surface-variant hover:text-on-secondary px-6 py-2.5 rounded-lg font-label-caps text-[11px] border border-outline-variant/10 transition-all flex items-center gap-2 uppercase font-bold">
-                        View Profile
-                        <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
-                      </button>
                     </div>
                   </div>
-                </Link>
-              );
-            })}
-          </section>
-        )}
+                </div>
+              </DossierSection>
+            </section>
 
-        <footer className="mt-16 pt-10 border-t border-outline-variant/10 flex flex-col md:flex-row justify-between items-center gap-6 pb-12">
-          <p className="font-label-caps font-bold text-[11px] text-on-surface-variant uppercase tracking-widest">© 2025 AWA Analytics Division. For official investigative use only.</p>
-          <div className="flex items-center gap-10">
-            <a className="font-label-caps font-bold text-[11px] text-on-surface-variant hover:text-secondary transition-colors uppercase tracking-widest no-underline" href="#">Privacy Protocol</a>
-            <a className="font-label-caps font-bold text-[11px] text-on-surface-variant hover:text-secondary transition-colors uppercase tracking-widest no-underline" href="#">Data Governance</a>
-            <a className="font-label-caps font-bold text-[11px] text-on-surface-variant hover:text-secondary transition-colors uppercase tracking-widest no-underline" href="#">System Status</a>
+            <section className="grid grid-cols-1 xl:grid-cols-[1fr_1fr_1fr] gap-6">
+              <DossierSection label="GEOGRAPHIC OVERVIEW" title="Facilities by state" subtitle="State counts across facilities, violations, and enforcement actions.">
+                <InvestigationTable
+                  density="compact"
+                  columns={[
+                    { key: "state", label: "State", render: (row) => row.state },
+                    { key: "count", label: "Facilities", align: "right", render: (row) => formatNumber(row.count) },
+                  ]}
+                  rows={(data?.geographic_overview?.facilities_by_state || []).slice(0, 8).map((row) => ({ ...row, key: row.state }))}
+                />
+              </DossierSection>
+
+              <DossierSection label="GEOGRAPHIC OVERVIEW" title="Violations by state" subtitle="Geographic concentration of violation activity.">
+                <InvestigationTable
+                  density="compact"
+                  columns={[
+                    { key: "state", label: "State", render: (row) => row.state },
+                    { key: "count", label: "Violations", align: "right", render: (row) => formatNumber(row.count) },
+                  ]}
+                  rows={(data?.geographic_overview?.violations_by_state || []).slice(0, 8).map((row) => ({ ...row, key: row.state }))}
+                />
+              </DossierSection>
+
+              <DossierSection label="GEOGRAPHIC OVERVIEW" title="Enforcement by state" subtitle="Action volume across states.">
+                <InvestigationTable
+                  density="compact"
+                  columns={[
+                    { key: "state", label: "State", render: (row) => row.state },
+                    { key: "count", label: "Actions", align: "right", render: (row) => formatNumber(row.count) },
+                  ]}
+                  rows={(data?.geographic_overview?.enforcement_by_state || []).slice(0, 8).map((row) => ({ ...row, key: row.state }))}
+                />
+              </DossierSection>
+            </section>
+
+            <section className="grid grid-cols-1 xl:grid-cols-[1.2fr_0.8fr] gap-6">
+              <DossierSection label="INSPECTOR ACTIVITY" title="Most active inspectors" subtitle="Inspection volume, violations found, and most recent activity are driven from inspection records.">
+                <InvestigationTable
+                  density="compact"
+                  columns={[
+                    {
+                      key: "inspector",
+                      label: "Inspector",
+                      render: (row) => (
+                        <div>
+                          <div className="font-medium text-on-surface">{row.inspector_name}</div>
+                          <div className="text-[11px] uppercase tracking-[0.18em] text-on-surface-variant">{row.inspector_id}</div>
+                        </div>
+                      ),
+                    },
+                    { key: "inspection_count", label: "Inspections", align: "right", render: (row) => formatNumber(row.inspection_count) },
+                    { key: "violations_found", label: "Violations Found", align: "right", render: (row) => formatNumber(row.violations_found) },
+                    { key: "recent_inspection_date", label: "Recent", render: (row) => formatDate(row.recent_inspection_date) },
+                  ]}
+                  rows={topInspectorsRows}
+                />
+
+                <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="rounded-3xl border border-white/5 bg-surface-container-low p-4">
+                    <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.22em] text-on-surface-variant">Recent inspection activity</div>
+                    <TimelinePanel items={recentInspectionItems} />
+                  </div>
+                  <div className="rounded-3xl border border-white/5 bg-surface-container-low p-4">
+                    <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.22em] text-on-surface-variant">Inspector coverage</div>
+                    <div className="space-y-3">
+                      {topInspectorsRows.map((row) => (
+                        <ComplianceIndicator
+                          key={row.inspector_id}
+                          label={row.inspector_name}
+                          value={formatNumber(row.inspection_count)}
+                          detail={`${formatNumber(row.violations_found)} violations found · Last ${formatDate(row.recent_inspection_date)}`}
+                          tone={row.violations_found > 0 ? "critical" : "primary"}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </DossierSection>
+
+              <DossierSection label="ENFORCEMENT OVERVIEW" title="Penalty trends and recent actions" subtitle="Recent action rows and penalty history are sourced from enforcement action records.">
+                <div className="rounded-3xl border border-white/5 bg-surface-container-low p-4 mb-4">
+                  <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.22em] text-on-surface-variant">Penalty amount trends</div>
+                  <div className="h-[220px]">
+                    {penaltyTrendData.length > 0 ? (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={penaltyTrendData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" vertical={false} />
+                          <XAxis dataKey="month" stroke="rgba(255,255,255,0.5)" tickLine={false} axisLine={false} fontSize={11} />
+                          <YAxis stroke="rgba(255,255,255,0.5)" tickLine={false} axisLine={false} fontSize={11} />
+                          <Tooltip contentStyle={{ backgroundColor: "#111827", borderColor: "rgba(255,255,255,0.1)", borderRadius: "12px" }} />
+                          <Area type="monotone" dataKey="penalty_total" stroke="#e9c349" fill="rgba(233,195,73,0.18)" strokeWidth={2} />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="flex h-full items-center justify-center text-sm text-on-surface-variant">No penalty trend data</div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-3xl border border-white/5 bg-surface-container-low p-4 mb-4">
+                  <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.22em] text-on-surface-variant">Recent enforcement actions</div>
+                  <InvestigationTable
+                    density="compact"
+                    columns={[
+                      {
+                        key: "facility",
+                        label: "Facility",
+                        render: (row) => (
+                          <div>
+                            <div className="font-medium text-on-surface">{row.facility_name}</div>
+                            <div className="text-[11px] uppercase tracking-[0.18em] text-on-surface-variant">{row.facility_state}</div>
+                          </div>
+                        ),
+                      },
+                      { key: "action_type", label: "Type", render: (row) => row.action_type },
+                      { key: "date", label: "Date", render: (row) => formatDate(row.date) },
+                      { key: "penalty", label: "Penalty", align: "right", render: (row) => (row.penalty_amount ? `$${formatNumber(row.penalty_amount)}` : "—") },
+                    ]}
+                    rows={recentEnforcementRows}
+                  />
+                </div>
+
+                <DossierSection label="ENFORCEMENT HISTORY" title="Facilities with enforcement history" subtitle="Facilities with repeated action history and total penalties.">
+                  <InvestigationTable
+                    density="compact"
+                    columns={[
+                      { key: "name", label: "Facility", render: (row) => row.name },
+                      { key: "state", label: "State", render: (row) => row.state },
+                      { key: "action_count", label: "Actions", align: "right", render: (row) => formatNumber(row.action_count) },
+                    ]}
+                    rows={enforcementHistoryRows}
+                  />
+                </DossierSection>
+              </DossierSection>
+            </section>
+
+            <section className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+              <DossierSection label="RISK QUEUE" title="Highest violation counts" subtitle="Facilities with the largest overall violation exposure.">
+                <InvestigationTable
+                  density="compact"
+                  columns={[
+                    { key: "name", label: "Facility", render: (row) => row.name },
+                    { key: "count", label: "Violations", align: "right", render: (row) => formatNumber(row.violation_count) },
+                  ]}
+                  rows={topViolationsRows}
+                />
+              </DossierSection>
+
+              <DossierSection label="RISK QUEUE" title="Direct or critical violations" subtitle="Facilities with the most direct/critical exposure over the 18-month window.">
+                <InvestigationTable
+                  density="compact"
+                  columns={[
+                    { key: "name", label: "Facility", render: (row) => row.name },
+                    { key: "count", label: "Direct/Critical", align: "right", render: (row) => formatNumber(row.direct_critical_count) },
+                  ]}
+                  rows={directCriticalRows}
+                />
+              </DossierSection>
+
+              <DossierSection label="RISK QUEUE" title="Facilities with enforcement actions" subtitle="Facilities with repeated enforcement activity and penalty history.">
+                <InvestigationTable
+                  density="compact"
+                  columns={[
+                    { key: "name", label: "Facility", render: (row) => row.name },
+                    { key: "actions", label: "Actions", align: "right", render: (row) => formatNumber(row.action_count) },
+                    { key: "penalty", label: "Penalty", align: "right", render: (row) => (row.total_penalty ? `$${formatNumber(row.total_penalty)}` : "—") },
+                  ]}
+                  rows={enforcementHistoryRows}
+                />
+              </DossierSection>
+            </section>
+
+            <footer className="mt-4 border-t border-outline-variant/10 py-8 text-[11px] uppercase tracking-[0.22em] text-on-surface-variant flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+              <span>All widgets reflect platform records only. No synthetic metrics are used.</span>
+              <div className="flex items-center gap-4">
+                <Link to="/search" className="no-underline text-on-surface-variant hover:text-secondary">
+                  Search
+                </Link>
+                <Link to="/inspectors" className="no-underline text-on-surface-variant hover:text-secondary">
+                  Inspectors
+                </Link>
+                <Link to="/enforcement" className="no-underline text-on-surface-variant hover:text-secondary">
+                  Enforcement
+                </Link>
+              </div>
+            </footer>
           </div>
-        </footer>
+        )}
       </div>
     </>
   );
