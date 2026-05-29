@@ -34,3 +34,203 @@
     border: 1px solid rgba(255, 255, 255, 0.05);
   }
 }
+
+/* ===== Landing Page Styles ===== */
+.landing-vault-mesh {
+  background-color: #080a09;
+  background-image:
+    radial-gradient(at 0% 0%, hsla(158,45%,10%,1) 0, transparent 50%),
+    radial-gradient(at 50% 0%, hsla(158,45%,5%,1) 0, transparent 50%),
+    radial-gradient(at 100% 0%, hsla(158,45%,10%,1) 0, transparent 50%),
+    radial-gradient(at 50% 100%, hsla(45,45%,10%,1) 0, transparent 50%);
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  /* static bg, no animation — no will-change needed */
+}
+
+.landing-fog-layer {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  overflow: hidden;
+  contain: strict;
+}
+
+.landing-fog-blob {
+  position: absolute;
+  width: 50vw;
+  height: 50vw;
+  border-radius: 50%;
+  /* Use a pre-blurred gradient instead of filter: blur — massively cheaper */
+  background: radial-gradient(circle, rgba(176,239,213,0.04) 0%, rgba(176,239,213,0.01) 30%, transparent 60%);
+  /* No filter: blur — the gradient itself is soft enough */
+  will-change: transform;
+  transform: translateZ(0);
+  animation: landing-fog-drift 60s infinite linear;
+}
+
+.landing-spotlight {
+  position: absolute;
+  width: 60vw;
+  height: 60vw;
+  border-radius: 50%;
+  /* Pre-blurred via gradient spread, no filter needed */
+  background: radial-gradient(circle, rgba(233,195,73,0.03) 0%, rgba(233,195,73,0.01) 30%, transparent 70%);
+  pointer-events: none;
+  z-index: -1;
+  transform: translateZ(0);
+}
+
+.landing-glass-panel {
+  background: rgba(29, 32, 34, 0.4);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.landing-line-connector {
+  opacity: 0.4;
+  /* Removed transition — lines update via RAF, transition fights it and causes double-paint */
+}
+
+.landing-section-fade {
+  transition: opacity 0.8s ease-out, transform 0.8s ease-out;
+  will-change: opacity, transform;
+}
+
+.landing-animate-float-slow {
+  animation: landing-float-orbital 15s ease-in-out infinite;
+  will-change: transform;
+  transform: translateZ(0);
+}
+
+.landing-animate-float-core {
+  animation: landing-float-orbital 10s ease-in-out infinite alternate;
+  will-change: transform;
+  transform: translateZ(0);
+}
+
+.landing-animate-scan {
+  animation: landing-scan 6s linear infinite;
+  will-change: transform, opacity;
+  transform: translateZ(0);
+}
+
+/* Landing page scrollbar */
+.landing-page::-webkit-scrollbar {
+  width: 8px;
+}
+.landing-page::-webkit-scrollbar-track {
+  background: #080a09;
+}
+.landing-page::-webkit-scrollbar-thumb {
+  background: #323533;
+  border-radius: 4px;
+}
+
+@keyframes landing-fog-drift {
+  0% { transform: translate3d(0, 0, 0) rotate(0deg); }
+  33% { transform: translate3d(8%, 12%, 0) rotate(120deg); }
+  66% { transform: translate3d(-8%, 8%, 0) rotate(240deg); }
+  100% { transform: translate3d(0, 0, 0) rotate(360deg); }
+}
+
+/* Use transform instead of 'top' — avoids layout thrashing every frame */
+@keyframes landing-scan {
+  0% { transform: translateY(0) translateZ(0); opacity: 0; }
+  10% { opacity: 1; }
+  90% { opacity: 1; }
+  100% { transform: translateY(288px) translateZ(0); opacity: 0; }
+}
+
+@keyframes landing-float-orbital {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  33% { transform: translate3d(15px, -20px, 0); }
+  66% { transform: translate3d(-10px, 15px, 0); }
+}
+
+/* Smooth 3D Rotation Showcase */
+.rotating-dashboard {
+  transform: perspective(1200px) rotateY(-15deg) rotateX(4deg) rotateZ(-1deg);
+  transition: transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+
+/* Straighten on hover */
+.group:hover .rotating-dashboard {
+  transform: perspective(1200px) rotateY(0deg) rotateX(0deg) rotateZ(0deg) scale(1.02);
+}
+
+/* Slide-out login drawer overlay */
+.landing-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  z-index: 100;
+  display: flex;
+  justify-content: flex-end;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.landing-drawer-backdrop.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.landing-drawer-container {
+  height: 100%;
+  width: 100%;
+  max-width: 900px;
+  background-color: #070809;
+  display: flex;
+  transform: translateX(100%);
+  transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: -20px 0 50px rgba(0, 0, 0, 0.8);
+}
+
+.landing-drawer-backdrop.active .landing-drawer-container {
+  transform: translateX(0);
+}
+
+/* Horizontal scan lines background pattern for the form section */
+.landing-auth-scan-lines {
+  background-color: #0a0c0d;
+  background-image: linear-gradient(rgba(255, 255, 255, 0.012) 50%, transparent 50%);
+  background-size: 100% 4px;
+}
+
+/* Responsive columns for drawer */
+.landing-drawer-info-pane {
+  width: 38%;
+  background-color: #060708;
+  border-right: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.landing-drawer-form-pane {
+  width: 62%;
+  position: relative;
+}
+
+@media (max-width: 768px) {
+  .landing-drawer-info-pane {
+    display: none;
+  }
+  .landing-drawer-form-pane {
+    width: 100%;
+  }
+}
+
+
+
+
+
+
+
+
+

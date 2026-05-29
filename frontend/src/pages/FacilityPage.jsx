@@ -74,7 +74,8 @@ function InspectionAccordion({ inspection, onOpenPdf }) {
   
   let filename = inspection.source_pdf_path ? inspection.source_pdf_path.split('/').pop() : null;
   if (filename && !filename.endsWith('.pdf')) filename += '.pdf';
-  const pdfUrl = filename ? `${import.meta.env.VITE_SUPABASE_URL}/storage/v1/object/public/raw_pdfs/${filename}` : inspection.source_pdf;
+  const hasPdf = inspection.source_pdf_path || (inspection.source_pdf && inspection.source_pdf !== 'placeholder');
+  const pdfUrl = hasPdf ? `${import.meta.env.VITE_API_URL}/documents/proxy-pdf/${inspection.id}` : null;
 
   return (
     <div className={`bg-surface-container-low border border-outline-variant/10 rounded-2xl overflow-hidden mb-6 flex`}>

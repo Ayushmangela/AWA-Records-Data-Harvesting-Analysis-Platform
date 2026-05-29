@@ -11,7 +11,7 @@ from app.auth import require_api_key
 from app.database import get_db
 from app.models import Inspection
 
-router = APIRouter(prefix="/documents", tags=["documents"], dependencies=[Depends(require_api_key)])
+router = APIRouter(prefix="/documents", tags=["documents"])
 
 HASH_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
 

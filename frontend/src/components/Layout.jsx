@@ -1,8 +1,10 @@
 import React from "react";
 import { Link, useLocation } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
 
 export default function Layout({ children }) {
   const location = useLocation();
+  const { logout } = useAuth();
 
   return (
     <div className="font-body-md text-body-md antialiased custom-scrollbar dark min-h-screen text-on-surface">
@@ -43,6 +45,13 @@ export default function Layout({ children }) {
           <button className="flex items-center gap-3 text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/30 rounded-lg px-4 py-3 transition-all active:scale-95">
             <span className="material-symbols-outlined">settings</span>
             <span className="font-label-caps text-label-caps uppercase">Settings</span>
+          </button>
+          <button 
+            onClick={logout} 
+            className="flex items-center gap-3 text-on-surface-variant hover:text-error hover:bg-error/10 rounded-lg px-4 py-3 transition-all active:scale-95 w-full text-left"
+          >
+            <span className="material-symbols-outlined">logout</span>
+            <span className="font-label-caps text-label-caps uppercase">Logout</span>
           </button>
           <div className="flex items-center gap-3 px-2 py-3 bg-surface-container-low rounded-xl border border-outline-variant/5">
             <img alt="Organization Logo" className="w-8 h-8 rounded-full border border-secondary/20" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDKK4QidNb2g4tcNPEVpe85lSQnFYazc4cGFSykw9OtrrV767lMfzBHyLwdTyrnLlZdBvun1Mc7Kmp2kEw7rEDJNxGBQYquV8KNs-FMQsCrYSV5Fcb9ooVxSbuTOXkig-4OxFDQjXj3eyCyloIkdjQAKIxlQCj5PJsZzGLiDMzBPUz8rxDs1xjTiEdU3BH2QOvIp16DiKLIVmNQtfSMw7kcF3OPzs4Ii9O4bSzsYC5B95HfADyHKXDq81GrPdX1MIvq1HZYpK_hpeY"/>

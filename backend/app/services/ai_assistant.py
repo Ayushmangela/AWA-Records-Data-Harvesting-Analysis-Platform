@@ -122,8 +122,12 @@ def generate_facility_summary(facility_id):
         )
 
         if existing:
-            # existing.generated_at is TIMESTAMPTZ (tz-aware); compare against tz-aware now
-            age = (datetime.now(timezone.utc) - existing.generated_at).total_seconds() / 3600
+            # Handle potential offset-naive and offset-aware datetimes
+            generated_at = existing.generated_at
+            if generated_at.tzinfo is None:
+                age = (datetime.now() - generated_at).total_seconds() / 3600
+            else:
+                age = (datetime.now(timezone.utc) - generated_at).total_seconds() / 3600
             if age < 24:
                 return json.loads(existing.summary_json)
 
@@ -230,7 +234,11 @@ def generate_legal_memo(facility_id):
         )
 
         if existing:
-            age = (datetime.now(timezone.utc) - existing.generated_at).total_seconds() / 3600
+            generated_at = existing.generated_at
+            if generated_at.tzinfo is None:
+                age = (datetime.now() - generated_at).total_seconds() / 3600
+            else:
+                age = (datetime.now(timezone.utc) - generated_at).total_seconds() / 3600
             if age < 24:
                 return {
                     "facility_name": facility.name,
