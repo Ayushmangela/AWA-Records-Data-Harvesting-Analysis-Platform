@@ -1,17 +1,18 @@
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import case, desc, func, or_
 from sqlalchemy.orm import Session
 
-from app.auth import require_api_key
+from app.auth import require_auth
 from app.database import get_db
+from app.limiter import limiter
 from app.models import EnforcementAction, Facility, Inspection, Inventory, Violation
 from app.schemas import DashboardStatsOut
 from app.services.category_mapper import map_section_to_category
 from app.services.risk_engine import cutoff_18_months_ago
 
-router = APIRouter(prefix="/dashboard", tags=["dashboard"], dependencies=[Depends(require_api_key)])
+router = APIRouter(prefix="/dashboard", tags=["dashboard"], dependencies=[Depends(require_auth)])
 
 
 def _pct_change(current: int, previous: int) -> float | None:
@@ -32,7 +33,8 @@ def _activity_item(activity_type: str, item_id: int, when_value, title: str, det
 
 
 @router.get("/stats", response_model=DashboardStatsOut)
-def get_dashboard_stats(db: Session = Depends(get_db)):
+@limiter.limit("30/minute")
+def get_dashboard_stats(request: Request, db: Session = Depends(get_db)):
     today = datetime.now(timezone.utc).date()
     current_window_start = today - timedelta(days=30)
     previous_window_start = today - timedelta(days=60)

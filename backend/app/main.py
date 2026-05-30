@@ -61,6 +61,20 @@ app.add_middleware(SlowAPIMiddleware)
 cors_origins_str = os.environ.get("CORS_ALLOWED_ORIGINS", "")
 allowed_origins = [o.strip() for o in cors_origins_str.split(",") if o.strip()]
 
+if not allowed_origins:
+    allowed_origins = [
+        "http://localhost:4173",
+        "http://127.0.0.1:4173",
+        "http://localhost:4174",
+        "http://127.0.0.1:4174",
+        "http://localhost:4175",
+        "http://127.0.0.1:4175",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+    ]
+
 
 def _expand_loopback_origins(origins: list[str]) -> list[str]:
     expanded: list[str] = []
@@ -79,7 +93,7 @@ def _expand_loopback_origins(origins: list[str]) -> list[str]:
             add(origin.replace("127.0.0.1", "localhost"))
 
     if any("localhost" in origin or "127.0.0.1" in origin for origin in origins):
-        for port in (4173, 4174, 5173, 5174):
+        for port in (4173, 4174, 4175, 5173, 5174, 5175):
             add(f"http://localhost:{port}")
             add(f"http://127.0.0.1:{port}")
 

@@ -1,21 +1,51 @@
-import hmac
 import os
+import requests
+from fastapi import Depends, HTTPException, status, Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from fastapi import Header, HTTPException, status
+security = HTTPBearer(auto_error=False)
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 
-def require_api_key(x_api_key: str | None = Header(default=None)):
-    if not x_api_key:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing API Key")
+def require_auth(request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(security)):
+    token = None
+    if credentials:
+        token = credentials.credentials
+    else:
+        token = request.query_params.get("token") or request.query_params.get("access_token")
 
-    keys_str = os.environ.get("AWA_API_KEYS", "")
-    valid_keys = [k.strip() for k in keys_str.split(",") if k.strip()]
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing Authorization header or token query parameter"
+        )
 
-    if not valid_keys:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API Key")
-
-    for valid_key in valid_keys:
-        if hmac.compare_digest(valid_key.encode("utf-8"), x_api_key.encode("utf-8")):
-            return x_api_key
-
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API Key")
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Supabase credentials are not configured on the server"
+        )
+    
+    url = f"{SUPABASE_URL.rstrip('/')}/auth/v1/user"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "apikey": SUPABASE_KEY
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=5)
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired token"
+            )
+        return response.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Token verification failed: {e}"
+        )

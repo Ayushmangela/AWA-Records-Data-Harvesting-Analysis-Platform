@@ -2,14 +2,14 @@ import base64
 import json
 import logging
 import time
-from datetime import date, timedelta
+from datetime import date
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import asc, desc, func, or_, select, tuple_, text
 from sqlalchemy.orm import Session, aliased, joinedload, selectinload
 
-from app.auth import require_api_key
+from app.auth import require_auth
 from app.database import get_db
 from app.limiter import limiter
 from app.models import (
@@ -33,6 +33,7 @@ from app.schemas import (
 from app.services.ai_assistant import generate_facility_summary, generate_legal_memo
 from app.services.category_mapper import map_section_to_category
 from app.services.risk_engine import (
+    build_facility_dossier_summary,
     calculate_facilities_risk_flags_bulk,
     calculate_facility_risk_flags,
     cutoff_18_months_ago,
@@ -41,8 +42,85 @@ from app.services.risk_engine import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
-    prefix="/facilities", tags=["facilities"], dependencies=[Depends(require_api_key)]
+    prefix="/facilities", tags=["facilities"], dependencies=[Depends(require_auth)]
 )
+
+
+def _build_facility_dossier_summary_payload(db: Session, facility_id: int) -> dict:
+    facility_row = db.query(Facility).filter(Facility.id == facility_id).first()
+    if facility_row is None:
+        raise HTTPException(status_code=404, detail="Facility not found")
+
+    inspections = (
+        db.query(Inspection)
+        .filter(Inspection.facility_id == facility_id)
+        .options(
+            joinedload(Inspection.violations),
+            joinedload(Inspection.inventory),
+        )
+        .order_by(desc(Inspection.inspection_date), desc(Inspection.id))
+        .all()
+    )
+
+    inspection_dicts = []
+    for insp in inspections:
+        inspection_dicts.append(
+            {
+                "id": insp.id,
+                "inspection_date": insp.inspection_date,
+                "inspection_type": insp.inspection_type,
+                "inspector_name": insp.inspector_name,
+                "violation_count": insp.violation_count,
+                "violations": [
+                    {
+                        "id": viol.id,
+                        "severity": viol.severity,
+                        "section": viol.section,
+                        "description": viol.description,
+                        "source_page": viol.source_page,
+                    }
+                    for viol in insp.violations
+                ],
+                "inventory": [
+                    {"count": inv.count}
+                    for inv in insp.inventory
+                ],
+            }
+        )
+
+    enforcement_dicts = [
+        {
+            "id": act.id,
+            "action_date": act.action_date,
+            "action_type": act.action_type,
+            "outcome": act.outcome,
+            "penalty_amount": act.penalty_amount,
+        }
+        for act in (
+            db.query(EnforcementAction)
+            .filter(EnforcementAction.facility_id == facility_id)
+            .order_by(desc(EnforcementAction.action_date), desc(EnforcementAction.id))
+            .limit(5)
+            .all()
+        )
+    ]
+
+    facility_dict = {
+        "id": facility_row.id,
+        "name": facility_row.name,
+        "customer_id": facility_row.customer_id,
+        "certificate_number": facility_row.certificate_number,
+        "license_type": facility_row.license_type,
+        "license_status": facility_row.license_status,
+        "address": facility_row.address,
+        "city": facility_row.city,
+        "state": facility_row.state,
+        "zip_code": facility_row.zip_code,
+        "county": facility_row.county,
+        "licensed_animal_limit": facility_row.licensed_animal_limit,
+    }
+
+    return build_facility_dossier_summary(facility_dict, inspection_dicts, enforcement_dicts)
 
 
 @router.get("", response_model=FacilityListOut)
@@ -58,6 +136,7 @@ def list_facilities(
     high_direct_violations: bool | None = None,
     inventory_spike: bool | None = None,
     severity: str | None = None,
+    inspection_frequency: str | None = None,
     sort_by: str = "violations_desc",
     limit: int = Query(20, ge=1, le=50),
     offset: int = Query(0, ge=0),
@@ -207,6 +286,49 @@ def list_facilities(
                 .distinct()
             )
         )
+
+    if inspection_frequency:
+        freq = inspection_frequency.lower().strip()
+        freq_cutoff = cutoff_18_months_ago()
+        inspection_count_query = (
+            db.query(
+                Inspection.facility_id.label("facility_id"),
+                func.count(Inspection.id).label("inspection_count"),
+            )
+            .filter(Inspection.inspection_date >= freq_cutoff)
+            .group_by(Inspection.facility_id)
+            .subquery()
+        )
+
+        if freq in {"low", "infrequent"}:
+            query = query.filter(
+                ~Facility.id.in_(
+                    db.query(inspection_count_query.c.facility_id).filter(
+                        inspection_count_query.c.inspection_count >= 4
+                    )
+                )
+            )
+        elif freq in {"moderate", "medium"}:
+            query = query.filter(
+                Facility.id.in_(
+                    db.query(inspection_count_query.c.facility_id).filter(
+                        inspection_count_query.c.inspection_count.between(2, 3)
+                    )
+                )
+            )
+        elif freq in {"high", "frequent"}:
+            query = query.filter(
+                Facility.id.in_(
+                    db.query(inspection_count_query.c.facility_id).filter(
+                        inspection_count_query.c.inspection_count >= 4
+                    )
+                )
+            )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="inspection_frequency must be low, moderate, or high",
+            )
 
     # Subqueries for sorting
     violation_subquery = (
@@ -393,6 +515,31 @@ def list_facilities(
     }
 
 
+@router.get("/comparison", response_model=List[FacilityDossierSummaryOut])
+@limiter.limit("30/minute")
+def compare_facilities(
+    request: Request,
+    facility_ids: str = Query(..., description="Comma-separated facility IDs"),
+    db: Session = Depends(get_db),
+):
+    ids = []
+    for raw_id in facility_ids.split(","):
+        raw_id = raw_id.strip()
+        if not raw_id:
+            continue
+        try:
+            ids.append(int(raw_id))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="facility_ids must be integers")
+
+    if len(ids) < 2:
+        raise HTTPException(status_code=400, detail="At least two facility IDs are required")
+    if len(ids) > 4:
+        raise HTTPException(status_code=400, detail="No more than four facility IDs are allowed")
+
+    return [_build_facility_dossier_summary_payload(db, facility_id) for facility_id in ids]
+
+
 @router.get("/{facility_id}", response_model=FacilityDetailOut)
 def get_facility(facility_id: int, db: Session = Depends(get_db)):
     facility = db.query(Facility).filter(Facility.id == facility_id).first()
@@ -431,7 +578,7 @@ def get_facility(facility_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{facility_id}/ai-summary", response_model=AISummaryOut)
 @limiter.limit("5/hour")
-def get_ai_summary(facility_id: int, request: Request, db: Session = Depends(get_db)):
+def get_ai_summary(facility_id: int, request: Request):
     result = generate_facility_summary(facility_id)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
@@ -440,7 +587,7 @@ def get_ai_summary(facility_id: int, request: Request, db: Session = Depends(get
 
 @router.post("/{facility_id}/legal-memo", response_model=LegalMemoOut)
 @limiter.limit("5/hour")
-def get_legal_memo(facility_id: int, request: Request, db: Session = Depends(get_db)):
+def get_legal_memo(facility_id: int, request: Request):
     result = generate_legal_memo(facility_id)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
@@ -537,6 +684,84 @@ def get_facility_enforcement(facility_id: int, request: Request, db: Session = D
 @router.get("/{facility_id}/dossier-summary", response_model=FacilityDossierSummaryOut)
 @limiter.limit("30/minute")
 def get_facility_dossier_summary(facility_id: int, request: Request, db: Session = Depends(get_db)):
+    if db.bind.dialect.name == "sqlite":
+        facility_row = db.query(Facility).filter(Facility.id == facility_id).first()
+        if facility_row is None:
+            raise HTTPException(status_code=404, detail="Facility not found")
+
+        inspections = (
+            db.query(Inspection)
+            .filter(Inspection.facility_id == facility_id)
+            .options(
+                joinedload(Inspection.violations),
+                joinedload(Inspection.inventory),
+            )
+            .order_by(desc(Inspection.inspection_date), desc(Inspection.id))
+            .all()
+        )
+
+        inspection_dicts = []
+        for insp in inspections:
+            inspection_dicts.append(
+                {
+                    "id": insp.id,
+                    "inspection_date": insp.inspection_date,
+                    "inspection_type": insp.inspection_type,
+                    "inspector_name": insp.inspector_name,
+                    "violation_count": insp.violation_count,
+                    "violations": [
+                        {
+                            "id": viol.id,
+                            "severity": viol.severity,
+                            "section": viol.section,
+                            "description": viol.description,
+                            "source_page": viol.source_page,
+                        }
+                        for viol in insp.violations
+                    ],
+                    "inventory": [
+                        {
+                            "count": inv.count,
+                        }
+                        for inv in insp.inventory
+                    ],
+                }
+            )
+
+        enforcement_dicts = [
+            {
+                "id": act.id,
+                "action_date": act.action_date,
+                "action_type": act.action_type,
+                "outcome": act.outcome,
+                "penalty_amount": act.penalty_amount,
+            }
+            for act in (
+                db.query(EnforcementAction)
+                .filter(EnforcementAction.facility_id == facility_id)
+                .order_by(desc(EnforcementAction.action_date), desc(EnforcementAction.id))
+                .limit(5)
+                .all()
+            )
+        ]
+
+        facility_dict = {
+            "id": facility_row.id,
+            "name": facility_row.name,
+            "customer_id": facility_row.customer_id,
+            "certificate_number": facility_row.certificate_number,
+            "license_type": facility_row.license_type,
+            "license_status": facility_row.license_status,
+            "address": facility_row.address,
+            "city": facility_row.city,
+            "state": facility_row.state,
+            "zip_code": facility_row.zip_code,
+            "county": facility_row.county,
+            "licensed_animal_limit": facility_row.licensed_animal_limit,
+        }
+
+        return build_facility_dossier_summary(facility_dict, inspection_dicts, enforcement_dicts)
+
     query = text("""
         SELECT json_build_object(
             'facility', (
@@ -622,208 +847,75 @@ def get_facility_dossier_summary(facility_id: int, request: Request, db: Session
             e_obj["action_date"] = date.fromisoformat(e_obj["action_date"])
         enforcements.append(e_obj)
 
-    # Compute snapshot and other fields
-    total_inspections = len(inspections)
-    total_violations = sum(insp.get("violation_count") or 0 for insp in inspections)
-    inspectors = {insp.get("inspector_name") for insp in inspections if insp.get("inspector_name")}
-    unique_inspectors_count = len(inspectors)
+    return build_facility_dossier_summary(facility, inspections, enforcements)
 
-    critical_direct_count = sum(
-        1 for insp in inspections 
-        for v in insp.get("violations", []) 
-        if v.get("severity") and v.get("severity").lower() in ("critical", "direct")
-    )
-
-    latest_animal_count = 0
-    latest_inv_inspection = None
-    for insp in inspections:
-        if len(insp.get("inventory", [])) > 0:
-            latest_inv_inspection = insp
-            break
-    if latest_inv_inspection:
-        latest_animal_count = sum(item.get("count") or 0 for item in latest_inv_inspection.get("inventory", []))
-
-    licensed_limit = facility.get("licensed_animal_limit")
-    compliance_snapshot = {
-        "total_inspections": total_inspections,
-        "total_violations": total_violations,
-        "critical_direct_count": critical_direct_count,
-        "unique_inspectors_count": unique_inspectors_count,
-        "latest_animal_count": latest_animal_count,
-        "licensed_animal_limit": licensed_limit,
-    }
-
-    latest_inspection = None
-    if inspections:
-        latest = inspections[0]
-        latest_inspection = {
-            "inspection_date": latest.get("inspection_date"),
-            "inspection_type": latest.get("inspection_type"),
-            "inspector_name": latest.get("inspector_name"),
-            "violation_count": latest.get("violation_count") or 0,
-        }
-
-    # Compute risk flags in-memory
-    risk_flags = {
-        "exceeds_animal_limit": False,
-        "high_direct_violations": False,
-        "inventory_spike": False,
-    }
-    if licensed_limit is not None and latest_animal_count > licensed_limit:
-        risk_flags["exceeds_animal_limit"] = True
-
-    cutoff_date = date.today() - timedelta(days=18 * 30)
-    direct_viol_count = sum(
-        1 for insp in inspections
-        for v in insp.get("violations", [])
-        if insp.get("inspection_date") and insp.get("inspection_date") >= cutoff_date
-        and v.get("severity") and v.get("severity").lower() in ("critical", "direct")
-    )
-    if direct_viol_count > 3:
-        risk_flags["high_direct_violations"] = True
-
-    insps_with_inv = [insp for insp in inspections if len(insp.get("inventory", [])) > 0]
-    insps_with_inv.sort(key=lambda x: (x.get("inspection_date") or date.min, x.get("id")))
-    if len(insps_with_inv) >= 2:
-        prev_total = sum(item.get("count") or 0 for item in insps_with_inv[-2].get("inventory", []))
-        curr_total = sum(item.get("count") or 0 for item in insps_with_inv[-1].get("inventory", []))
-        if prev_total > 0 and curr_total > prev_total * 3:
-            risk_flags["inventory_spike"] = True
-
-    risk_flags["animal_limit_exceeded"] = risk_flags["exceeds_animal_limit"]
-    risk_flags["has_high_direct_violations"] = risk_flags["high_direct_violations"]
-    risk_flags["recent_inventory_spike"] = risk_flags["inventory_spike"]
-
-    active_flags_count = sum([
-        risk_flags["animal_limit_exceeded"],
-        risk_flags["has_high_direct_violations"],
-        risk_flags["recent_inventory_spike"]
-    ])
-    
-    if risk_flags["has_high_direct_violations"] or active_flags_count >= 2:
-        risk_flags["risk_level"] = "HIGH"
-    elif active_flags_count == 1:
-        risk_flags["risk_level"] = "MEDIUM"
-    else:
-        risk_flags["risk_level"] = "LOW"
-
-    drivers = []
-    if risk_flags["animal_limit_exceeded"]:
-        drivers.append("Latest animal count exceeds licensed inventory limit")
-    if risk_flags["has_high_direct_violations"]:
-        drivers.append("More than 3 direct or critical violations in the last 18 months")
-    if risk_flags["recent_inventory_spike"]:
-        drivers.append("Significant animal inventory spike detected between recent audits")
-    risk_flags["risk_drivers"] = drivers
-
-    # Compute prioritized facts in-memory
-    prioritized_facts = []
-    
-    if latest_inspection and latest_inspection["inspection_date"]:
-        latest_date_str = latest_inspection["inspection_date"].strftime("%b %d, %Y").upper().replace(" ", "_")
-        prioritized_facts.append({
-            "key": "latest-insp",
-            "text": f"The most recent inspection on {latest_date_str} was a {latest_inspection['inspection_type'] or 'ROUTINE INSPECTION'} and recorded {latest_inspection['violation_count']} violation(s).",
-            "citations": [{"inspection_id": inspections[0]["id"], "inspection_date": latest_inspection["inspection_date"].isoformat()}]
-        })
-
-    if licensed_limit:
-        for insp in inspections:
-            total_inv = sum(item.get("count") or 0 for item in insp.get("inventory", []))
-            if total_inv > licensed_limit:
-                insp_date_str = insp["inspection_date"].strftime("%b %d, %Y").upper().replace(" ", "_") if insp.get("inspection_date") else None
-                prioritized_facts.append({
-                    "key": f"limit-exceeded-{insp['id']}",
-                    "text": f"Total animal inventory ({total_inv}) exceeded the licensed limit of {licensed_limit} during the inspection on {insp_date_str or '—'}.",
-                    "citations": [{"inspection_id": insp["id"], "inspection_date": insp["inspection_date"].isoformat() if insp.get("inspection_date") else None}]
-                })
-
-    all_critical_violations = []
-    for insp in inspections:
-        for v in insp.get("violations", []):
-            if v.get("severity") and v.get("severity").lower() in ("critical", "direct"):
-                all_critical_violations.append((insp, v))
-                
-    all_critical_violations.sort(key=lambda x: (x[0].get("inspection_date") or date.min, x[0].get("id")), reverse=True)
-    
-    for insp, v in all_critical_violations[:3]:
-        v_date_str = insp["inspection_date"].strftime("%b %d, %Y").upper().replace(" ", "_") if insp.get("inspection_date") else None
-        severity_label = v.get("severity").upper() if v.get("severity") else "VIOLATION"
-        desc_excerpt = v.get("description")[:90] + "..." if v.get("description") and len(v.get("description")) > 90 else (v.get("description") or "")
-        v_category = map_section_to_category(v.get("section"), v.get("description"))
-        prioritized_facts.append({
-            "key": f"viol-{v['id']}",
-            "text": f"Cited for a {severity_label} violation of Section {v.get('section') or '?'} ({v_category or 'General Care'}) on {v_date_str or '—'}: \"{desc_excerpt}\"",
-            "citations": [{"inspection_id": insp["id"], "inspection_date": insp["inspection_date"].isoformat() if insp.get("inspection_date") else None, "source_page": v.get("source_page")}]
-        })
-
-    section_counts = {}
-    section_violations = {}
-    for insp in inspections:
-        for v in insp.get("violations", []):
-            sec = v.get("section")
-            if sec:
-                section_counts[sec] = section_counts.get(sec, 0) + 1
-                section_violations.setdefault(sec, []).append((insp, v))
-                
-    for sec, count in section_counts.items():
-        if count >= 2:
-            cits = section_violations[sec]
-            prioritized_facts.append({
-                "key": f"recurring-sec-{sec}",
-                "text": f"Section {sec} was cited recurrently ({count} times) across multiple inspections.",
-                "citations": [{"inspection_id": insp["id"], "inspection_date": insp["inspection_date"].isoformat() if insp.get("inspection_date") else None, "source_page": v.get("source_page")} for insp, v in cits]
-            })
-
-    # Compile recent activities list
-    recent_activities = []
-    for insp in inspections[:5]:
-        recent_activities.append({
-            "type": "inspection",
-            "id": insp["id"],
-            "date": insp["inspection_date"].isoformat() if insp.get("inspection_date") else None,
-            "title": "Inspection Conducted",
-            "violations": insp.get("violation_count") or 0,
-            "description": f"A {insp.get('inspection_type') or 'Routine'} inspection was completed by inspector {insp.get('inspector_name') or 'UNKNOWN'}, recording {insp.get('violation_count') or 0} violation(s)."
-        })
-
-    for act in enforcements:
-        recent_activities.append({
-            "type": "enforcement",
-            "id": act["id"],
-            "date": act["action_date"].isoformat() if act.get("action_date") else None,
-            "title": f"Enforcement Action: {act.get('action_type')}",
-            "violations": 0,
-            "description": f"Outcome: {act.get('outcome') or 'PENDING'} {f'| Penalty: ${act.get('penalty_amount'):,.2f}' if act.get('penalty_amount') else ''}"
-        })
-
-    recent_activities.sort(key=lambda x: x["date"] or "", reverse=True)
-    recent_activities = recent_activities[:5]
-
-    return {
-        "id": facility["id"],
-        "name": facility["name"],
-        "customer_id": facility.get("customer_id"),
-        "certificate_number": facility.get("certificate_number"),
-        "license_status": facility.get("license_status"),
-        "license_type": facility.get("license_type"),
-        "address": facility.get("address"),
-        "city": facility.get("city"),
-        "state": facility.get("state"),
-        "zip_code": facility.get("zip_code"),
-        "county": facility.get("county"),
-        "licensed_animal_limit": licensed_limit,
-        "risk_flags": risk_flags,
-        "compliance_snapshot": compliance_snapshot,
-        "latest_inspection": latest_inspection,
-        "prioritized_facts": prioritized_facts[:5],
-        "recent_activities": recent_activities
-    }
 
 
 @router.get("/{facility_id}/inspections", response_model=List[InspectionOut])
 @limiter.limit("30/minute")
 def get_facility_inspections(facility_id: int, request: Request, db: Session = Depends(get_db)):
+    if db.bind.dialect.name == "sqlite":
+        inspections = (
+            db.query(Inspection)
+            .filter(Inspection.facility_id == facility_id)
+            .options(
+                joinedload(Inspection.violations),
+                joinedload(Inspection.inventory),
+            )
+            .order_by(desc(Inspection.inspection_date), desc(Inspection.id))
+            .all()
+        )
+        inspections_list = []
+        for insp in inspections:
+            insp_dict = {
+                "id": insp.id,
+                "facility_id": insp.facility_id,
+                "facility_name": insp.facility.name if insp.facility else None,
+                "facility_state": insp.facility.state if insp.facility else None,
+                "inspection_date": insp.inspection_date,
+                "inspection_type": insp.inspection_type,
+                "inspector_name": insp.inspector_name,
+                "inspector_id": insp.inspector_id,
+                "violations_found": insp.violations_found,
+                "violation_count": insp.violation_count,
+                "source_pdf": insp.source_pdf,
+                "source_pdf_path": insp.source_pdf_path,
+                "processing_status": insp.processing_status,
+                "processed_at": insp.processed_at,
+                "error_reason": insp.error_reason,
+                "source_type": insp.source_type,
+                "violations": [
+                    {
+                        "id": v.id,
+                        "inspection_id": v.inspection_id,
+                        "severity": v.severity,
+                        "section": v.section,
+                        "description": v.description,
+                        "source_pdf": v.source_pdf,
+                        "source_page": v.source_page,
+                        "category": map_section_to_category(v.section, v.description)
+                    }
+                    for v in insp.violations
+                ],
+                "inventory": [
+                    {
+                        "id": inv.id,
+                        "inspection_id": inv.inspection_id,
+                        "scientific_name": inv.scientific_name,
+                        "common_name": inv.common_name,
+                        "count": inv.count,
+                        "source_pdf": inv.source_pdf
+                    }
+                    for inv in insp.inventory
+                ]
+            }
+            inspections_list.append(insp_dict)
+            
+        facility_exists = db.query(Facility.id).filter(Facility.id == facility_id).first() is not None
+        if not facility_exists:
+            raise HTTPException(status_code=404, detail="Facility not found")
+        return inspections_list
+
     query = text("""
         SELECT json_agg(i)
         FROM (
@@ -865,5 +957,6 @@ def get_facility_inspections(facility_id: int, request: Request, db: Session = D
             viol["category"] = map_section_to_category(viol.get("section"), viol.get("description"))
             
     return raw_inspections
+
 
 

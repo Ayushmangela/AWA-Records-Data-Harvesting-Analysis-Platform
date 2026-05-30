@@ -151,19 +151,69 @@ export default function ReportViewer({ reportType, facilityName, generatedAt, co
       strong { font-weight: 700; }
       .disclaimer { margin-top: 48px; font-size: 11px; color: #9ca3af; border-top: 1px solid #e5e7eb; padding-top: 16px; }
     `;
-    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${facilityName} — ${reportType}</title><style>${style}</style></head><body></body></html>`);
-    w.document.close();
-    const container = w.document.createElement("div");
-    container.innerHTML = `<h1>${facilityName}</h1><div style="color:#6b7280;font-size:13px;margin-bottom:24px">${reportType} &mdash; ${formattedDate}</div><hr style="margin:16px 0">`;
-    w.document.body.appendChild(container);
-    const pre = w.document.createElement("pre");
-    pre.style.cssText = "white-space:pre-wrap;word-wrap:break-word;font-family:inherit;font-size:14px";
+    // Build a safe document using createElement and textContent to avoid executing
+    // any user-controlled HTML. Do NOT use document.write or innerHTML here.
+    const doc = w.document;
+    doc.open();
+    // Ensure a proper head and body exist
+    const head = doc.head || doc.getElementsByTagName('head')[0] || doc.createElement('head');
+    const body = doc.body || doc.getElementsByTagName('body')[0] || doc.createElement('body');
+
+    // Title
+    try {
+      doc.title = `${facilityName} — ${reportType}`;
+    } catch (e) {
+      // ignore
+    }
+
+    // Style
+    const styleEl = doc.createElement("style");
+    styleEl.type = "text/css";
+    styleEl.textContent = style;
+    if (!head.parentNode) doc.appendChild(head);
+    head.appendChild(styleEl);
+
+    // Header container
+    const container = doc.createElement("div");
+    const h1 = doc.createElement("h1");
+    h1.textContent = facilityName || "";
+    container.appendChild(h1);
+
+    const metaDiv = doc.createElement("div");
+    metaDiv.style.color = "#6b7280";
+    metaDiv.style.fontSize = "13px";
+    metaDiv.style.marginBottom = "24px";
+    metaDiv.textContent = `${reportType} — ${formattedDate}`;
+    container.appendChild(metaDiv);
+
+    const hr = doc.createElement("hr");
+    hr.style.margin = "16px 0";
+    container.appendChild(hr);
+
+    body.appendChild(container);
+
+    // Content (safe)
+    const pre = doc.createElement("pre");
+    pre.style.whiteSpace = "pre-wrap";
+    pre.style.wordWrap = "break-word";
+    pre.style.fontFamily = "inherit";
+    pre.style.fontSize = "14px";
     pre.textContent = content || "";
-    w.document.body.appendChild(pre);
-    const disc = w.document.createElement("p");
+    body.appendChild(pre);
+
+    const disc = doc.createElement("p");
     disc.className = "disclaimer";
     disc.textContent = "AI-generated for research purposes only. Human legal review required before official use.";
-    w.document.body.appendChild(disc);
+    body.appendChild(disc);
+
+    if (!doc.documentElement) {
+      // Ensure we have an html element
+      const html = doc.createElement('html');
+      html.appendChild(head);
+      html.appendChild(body);
+      doc.appendChild(html);
+    }
+    doc.close();
     w.focus();
     w.print();
   };

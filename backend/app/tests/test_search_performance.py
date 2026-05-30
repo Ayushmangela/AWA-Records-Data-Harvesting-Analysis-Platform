@@ -2,14 +2,10 @@ import os
 import time
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.database import Base, SessionLocal, engine
-from app.main import app
 from app.models import Facility
-
-client = TestClient(app)
 
 
 @pytest.fixture(scope="module")
@@ -52,7 +48,8 @@ def db_session():
     db.close()
 
 
-def test_search_performance(db_session: Session):
+@pytest.mark.performance
+def test_search_performance(db_session: Session, client):
     start = time.perf_counter()
 
     # Make sure we send the API key if it's required!
@@ -68,7 +65,8 @@ def test_search_performance(db_session: Session):
     assert duration < 0.200, f"Search took too long: {duration:.3f}s (Threshold: 0.200s)"
 
 
-def test_search_minimum_length_enforcement():
+@pytest.mark.performance
+def test_search_minimum_length_enforcement(client):
     os.environ["AWA_API_KEYS"] = "test_key_1"
     headers = {"X-API-Key": "test_key_1"}
     response = client.get("/facilities?name=Do", headers=headers)

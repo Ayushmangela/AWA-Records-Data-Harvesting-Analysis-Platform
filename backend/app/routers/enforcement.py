@@ -4,14 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
-from app.auth import require_api_key
+from app.auth import require_auth
 from app.database import get_db
 from app.limiter import limiter
 from app.models import EnforcementAction, Facility
 from app.schemas import EnforcementActionOut
 
 router = APIRouter(
-    prefix="/enforcement", tags=["enforcement"], dependencies=[Depends(require_api_key)]
+    prefix="/enforcement", tags=["enforcement"], dependencies=[Depends(require_auth)]
 )
 
 

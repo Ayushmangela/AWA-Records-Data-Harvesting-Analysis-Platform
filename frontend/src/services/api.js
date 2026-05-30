@@ -6,15 +6,27 @@
  * @typedef {import("./api.d.ts").paths} Paths
  */
 import createClient from "openapi-fetch";
+import supabase from "../lib/supabase";
 
 const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
-const API_KEY = import.meta.env.VITE_API_KEY;
 
 /** @type {import("openapi-fetch").Client<Paths>} */
 const client = createClient({
-
   baseUrl: BASE_URL,
-  headers: API_KEY ? { "X-API-Key": API_KEY } : {},
+});
+
+client.use({
+  async onRequest({ request }) {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.access_token) {
+        request.headers.set("Authorization", `Bearer ${session.access_token}`);
+      }
+    } catch (e) {
+      console.error("Failed to inject auth header", e);
+    }
+    return request;
+  }
 });
 
 // ── Facilities ──────────────────────────────────────────────────────────────

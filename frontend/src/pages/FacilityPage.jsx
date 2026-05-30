@@ -4,6 +4,8 @@ import { getFacilityDossierSummary, getFacilityInspections, getFacilityEnforceme
 import AdvocacyReports from "../components/AdvocacyReports";
 import PDFViewer from "../components/PDFViewer";
 import { useQuery } from "@tanstack/react-query";
+import supabase from "../lib/supabase";
+
 import { ResponsiveContainer, LineChart, Line, BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
 
 function formatDate(value) {
@@ -279,6 +281,17 @@ export default function FacilityPage() {
   
   const activeTab = tab || "overview";
 
+  const [token, setToken] = useState("");
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.access_token) {
+        setToken(session.access_token);
+      }
+    });
+  }, []);
+
+
   // TanStack Query caching and loading optimization
   const { data: facility, isLoading: loadingSummary } = useQuery({
     queryKey: ["facilitySummary", id],
@@ -526,7 +539,7 @@ export default function FacilityPage() {
       inspections.forEach(insp => {
         const hasPdf = insp.source_pdf_path || (insp.source_pdf && insp.source_pdf !== 'placeholder');
         if (hasPdf) {
-          const pdfUrl = `${import.meta.env.VITE_API_URL}/documents/proxy-pdf/${insp.id}`;
+          const pdfUrl = `${import.meta.env.VITE_API_URL || "http://localhost:8000"}/documents/proxy-pdf/${insp.id}${token ? `?token=${token}` : ""}`;
           const violationsText = insp.violations && insp.violations.length > 0
             ? insp.violations.map((v, i) => `[Violation ${i+1}] Sec ${v.section} (${v.severity}): ${v.description}`).join("\n\n")
             : "No compliance violations recorded. Structured inspection report contains animal inventory counts only.";
@@ -548,7 +561,7 @@ export default function FacilityPage() {
     if (enforcementActions) {
       enforcementActions.forEach(action => {
         if (action.source_pdf_path) {
-          const pdfUrl = `${import.meta.env.VITE_API_URL || "http://localhost:8000"}/documents/enforcement-pdf/${action.id}`;
+          const pdfUrl = `${import.meta.env.VITE_API_URL || "http://localhost:8000"}/documents/enforcement-pdf/${action.id}${token ? `?token=${token}` : ""}`;
           list.push({
             id: `enforce-${action.id}`,
             enforceId: action.id,
@@ -564,7 +577,7 @@ export default function FacilityPage() {
       });
     }
     return list.sort((a, b) => new Date(b.date) - new Date(a.date));
-  }, [facility, inspections, enforcementActions]);
+  }, [facility, inspections, enforcementActions, token]);
 
   const filteredDocuments = useMemo(() => {
     return allDocumentsList.filter(doc => {
@@ -964,7 +977,7 @@ export default function FacilityPage() {
                       const isSelected = selectedInspectionId === insp.id;
                       const hasViolations = insp.violation_count > 0;
                       const hasPdf = insp.source_pdf_path || (insp.source_pdf && insp.source_pdf !== 'placeholder');
-                      const pdfUrl = hasPdf ? `${import.meta.env.VITE_API_URL}/documents/proxy-pdf/${insp.id}` : null;
+                      const pdfUrl = hasPdf ? `${import.meta.env.VITE_API_URL || "http://localhost:8000"}/documents/proxy-pdf/${insp.id}${token ? `?token=${token}` : ""}` : null;
                       const isPdfActive = activePdf === pdfUrl;
                       
                       return (
@@ -1182,7 +1195,7 @@ export default function FacilityPage() {
                               <button
                                 onClick={() => {
                                   setSelectedInspectionId(v.inspection_id);
-                                  const url = `${import.meta.env.VITE_API_URL}/documents/proxy-pdf/${v.inspection_id}`;
+                                  const url = `${import.meta.env.VITE_API_URL || "http://localhost:8000"}/documents/proxy-pdf/${v.inspection_id}${token ? `?token=${token}` : ""}`;
                                   openPdfViewer(url, formatDate(v.inspection_date), `INSPECTION REPORT`);
                                   navigate(`/facility/${id}/inspections`);
                                 }}
@@ -1278,7 +1291,7 @@ export default function FacilityPage() {
                   ) : enforcementActions && enforcementActions.length > 0 ? (
                     enforcementActions.map((action) => {
                       const isSelected = selectedEnforcementId === action.id;
-                      const pdfUrl = `${import.meta.env.VITE_API_URL || "http://localhost:8000"}/documents/enforcement-pdf/${action.id}`;
+                      const pdfUrl = `${import.meta.env.VITE_API_URL || "http://localhost:8000"}/documents/enforcement-pdf/${action.id}${token ? `?token=${token}` : ""}`;
                       const hasPdf = action.source_pdf_path !== null;
                       const isPdfActive = activePdf === pdfUrl;
                       
@@ -1627,7 +1640,7 @@ export default function FacilityPage() {
                   facility={facility} 
                   onCitationClick={(inspectionId) => {
                     setSelectedInspectionId(inspectionId);
-                    const url = `${import.meta.env.VITE_API_URL}/documents/proxy-pdf/${inspectionId}`;
+                    const url = `${import.meta.env.VITE_API_URL || "http://localhost:8000"}/documents/proxy-pdf/${inspectionId}${token ? `?token=${token}` : ""}`;
                     openPdfViewer(url, "", `INSPECTION REPORT`);
                     navigate(`/facility/${id}/inspections`);
                   }} 

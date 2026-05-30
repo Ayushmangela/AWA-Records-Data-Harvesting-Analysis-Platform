@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import case, desc, func, or_
 from sqlalchemy.orm import Session, joinedload
 
-from app.auth import require_api_key
+from app.auth import require_auth
 from app.database import get_db
 from app.limiter import limiter
 from app.models import Facility, Inspection
@@ -10,7 +10,7 @@ from app.schemas import InspectorDetailOut, InspectorListOut
 from app.services.risk_engine import calculate_inspector_anomaly, calculate_inspector_anomaly_bulk
 
 router = APIRouter(
-    prefix="/inspectors", tags=["inspectors"], dependencies=[Depends(require_api_key)]
+    prefix="/inspectors", tags=["inspectors"], dependencies=[Depends(require_auth)]
 )
 
 
@@ -100,7 +100,8 @@ def list_inspectors(
 
 
 @router.get("/{inspector_id}", response_model=InspectorDetailOut)
-def get_inspector(inspector_id: str, db: Session = Depends(get_db)):
+@limiter.limit("30/minute")
+def get_inspector(inspector_id: str, request: Request, db: Session = Depends(get_db)):
     inspections = (
         db.query(Inspection)
         .options(joinedload(Inspection.facility))

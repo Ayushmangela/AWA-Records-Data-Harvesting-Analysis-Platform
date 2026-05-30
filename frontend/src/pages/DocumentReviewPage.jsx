@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { searchViolations } from "../services/api";
 import PDFViewer from "../components/PDFViewer";
+import supabase from "../lib/supabase";
+
 
 const US_STATES = [
   "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
@@ -235,11 +237,21 @@ export default function DocumentReviewPage() {
   // Pagination bounds checking
   const maxPages = Math.ceil(totalCount / 20) || 1;
 
+  const [token, setToken] = useState("");
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.access_token) {
+        setToken(session.access_token);
+      }
+    });
+  }, []);
+
   // Construct PDF Url proxy endpoint matching backend router
   const getProxyPdfUrl = (violation) => {
     if (!violation) return null;
     const baseUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
-    return `${baseUrl}/documents/proxy-pdf/${violation.inspection_id}`;
+    return `${baseUrl}/documents/proxy-pdf/${violation.inspection_id}${token ? `?token=${token}` : ""}`;
   };
 
   return (

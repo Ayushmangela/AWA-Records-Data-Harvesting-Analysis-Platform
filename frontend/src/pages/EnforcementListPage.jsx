@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { getEnforcement, searchEnforcement } from "../services/api";
+import supabase from "../lib/supabase";
+
 import {
   DossierSection,
   EvidenceBadge,
@@ -69,7 +71,6 @@ function EnforcementSkeleton() {
 
 export default function EnforcementListPage() {
   const glowRef = useRef(null);
-  const hasLoadedRef = useRef(false);
   const [filters, setFilters] = useState({ action_type: "", outcome: "", date_start: "", date_end: "", q: "" });
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -135,8 +136,7 @@ export default function EnforcementListPage() {
   };
 
   useEffect(() => {
-    if (hasLoadedRef.current) return;
-    hasLoadedRef.current = true;
+    let cancelled = false;
     const cached = readCache(cacheKey);
     if (cached?.payload) {
       setResults(cached.payload.results || []);
@@ -145,7 +145,45 @@ export default function EnforcementListPage() {
       setLoading(false);
       return;
     }
-    load(0);
+
+    const safeLoad = async () => {
+      setLoading(true);
+      try {
+        const params = {
+          action_type: filters.action_type || undefined,
+          outcome: filters.outcome || undefined,
+          date_start: filters.date_start || undefined,
+          date_end: filters.date_end || undefined,
+          limit,
+          offset: 0,
+          include_total: true,
+        };
+
+        if (filters.q && filters.q.length >= 3) params.query = filters.q;
+
+        const res = await searchEnforcement(params);
+        if (cancelled) return;
+        setResults(res.results || []);
+        setTotal(res.total ?? null);
+        setPage(0);
+        setLastUpdatedAt(Date.now());
+        const nextCacheKey = `enforcement-list-cache:${JSON.stringify({ filters, page: 0, limit })}`;
+        writeCache(nextCacheKey, { results: res.results || [], total: res.total ?? null });
+      } catch (error) {
+        if (!cancelled) {
+          console.error(error);
+          setResults([]);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    safeLoad();
+
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -170,7 +208,17 @@ export default function EnforcementListPage() {
     load(0, cleared);
   };
 
-  const pdfUrl = (id) => `${import.meta.env.VITE_API_URL || "http://localhost:8000"}/documents/enforcement-pdf/${id}`;
+  const [token, setToken] = useState("");
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.access_token) {
+        setToken(session.access_token);
+      }
+    });
+  }, []);
+
+  const pdfUrl = (id) => `${import.meta.env.VITE_API_URL || "http://localhost:8000"}/documents/enforcement-pdf/${id}${token ? `?token=${token}` : ""}`;
 
   const penaltyCases = results.filter((row) => (row.penalty_amount || 0) > 0 || (row.outcome || "").toLowerCase().includes("consent"));
   const recentActivity = useMemo(

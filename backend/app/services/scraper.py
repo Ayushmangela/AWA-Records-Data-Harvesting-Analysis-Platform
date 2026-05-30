@@ -1,12 +1,9 @@
 import concurrent.futures
-import hashlib
 import json
 import logging
 import os
 import re
-import ssl
 import time
-import urllib.request
 from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -19,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models import EnforcementAction, Facility, Inspection, ProcessingStatus
+from app.services.pdf_utils import download_pdf_bytes, sha256_bytes, sha256_file
 from app.services.ocr import extract_text_from_pdf
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -40,39 +38,13 @@ def generate_hash_id(url: str) -> str:
     elif "oid" in qs and "d" in qs:
         return hashlib.md5((qs["oid"][0] + qs["d"][0]).encode(), usedforsecurity=False).hexdigest()  # noqa: S324
 
+    import hashlib
+
     return hashlib.md5(url.encode(), usedforsecurity=False).hexdigest()  # noqa: S324
 
 
 def _download_with_retry(url: str, retries: int = 3, timeout: int = 15) -> bytes | None:
-    for attempt in range(1, retries + 1):
-        try:
-            req = urllib.request.Request(  # noqa: S310
-                url,
-                headers={
-                    "User-Agent": "The Data Liberation Project (data-liberation-project.org)",
-                    "Accept": "*/*"
-                }
-            )
-            # Create SSL context
-            context = ssl.create_default_context()
-            ca_bundle = os.environ.get("AWA_CA_BUNDLE")
-            if ca_bundle:
-                context.load_verify_locations(ca_bundle)
-            else:
-                # Fallback context in local sandboxes if certificate errors occur
-                context.check_hostname = False
-                context.verify_mode = ssl.CERT_NONE
-
-            with urllib.request.urlopen(req, timeout=timeout, context=context) as response:  # noqa: S310
-                content = response.read()
-                if len(content) < 1000:
-                    raise ValueError("Response too small to be a real PDF")
-                return content
-        except Exception as e:
-            logger.warning("Attempt %s for %s failed: %s", attempt, url, e)
-            if attempt < retries:
-                time.sleep(attempt * 2)
-    return None
+    return download_pdf_bytes(url, retries=retries, timeout=timeout)
 
 
 def scrape_state(state_code: str = "TX", license_type: str = "BREEDER", max_pages: int = 10) -> int:
@@ -268,15 +240,22 @@ def scrape_state(state_code: str = "TX", license_type: str = "BREEDER", max_page
                     db.flush()
 
                 filepath = pdf_dir / f"{hash_id}.pdf"
+                sha256_hash = None
                 if not filepath.exists():
                     logger.info(f"Downloading PDF: {hash_id}.pdf")
                     content = _download_with_retry(pdf_link)
                     if content is not None:
                         filepath.write_bytes(content)
+                        sha256_hash = sha256_bytes(content)
                         time.sleep(1)  # Throttle downloads
                     else:
                         logger.error(f"Failed to download {pdf_link}")
                         continue
+                else:
+                    try:
+                        sha256_hash = sha256_file(filepath)
+                    except Exception:
+                        pass
 
                 inspection = Inspection(
                     facility_id=facility.id,
@@ -286,13 +265,14 @@ def scrape_state(state_code: str = "TX", license_type: str = "BREEDER", max_page
                     source_pdf_path=hash_id,
                     processing_status=ProcessingStatus.PENDING,
                     source_type="USDA_DIRECT",
+                    pdf_sha256=sha256_hash,
                 )
                 db.add(inspection)
                 db.commit()
                 downloaded_count += 1
 
-            except Exception as e:
-                logger.error(f"Error processing record {hash_id}: {e}")
+            except Exception:
+                logger.exception("Error processing record %s", hash_id)
                 db.rollback()
 
         logger.info(f"Sync complete. {downloaded_count} new inspections added.")
@@ -313,8 +293,8 @@ def check_and_download_new_pdfs():
                 total_downloaded += future.result(timeout=1800)
             except concurrent.futures.TimeoutError:
                 logger.error("Scraper timed out after 30 minutes for state %s", state)
-            except Exception as e:
-                logger.exception("Scraper failed for state %s: %s", state, e)
+            except Exception:
+                logger.exception("Scraper failed for state %s", state)
     return total_downloaded
 
 
@@ -493,14 +473,21 @@ def scrape_enforcement_actions(max_pages: int = 40) -> int:
             # Download PDF
             filepath = pdf_dir / f"{hash_id}.pdf"
             pdf_text = ""
+            sha256_hash = None
             if not filepath.exists():
                 logger.info(f"Downloading enforcement PDF: {hash_id}.pdf from {pdf_link}")
                 content = _download_with_retry(pdf_link, retries=1, timeout=2)
                 if content is not None:
                     filepath.write_bytes(content)
+                    sha256_hash = sha256_bytes(content)
                     time.sleep(1)  # Throttle downloads
                 else:
                     logger.error(f"Failed to download PDF from {pdf_link}")
+            else:
+                try:
+                    sha256_hash = sha256_file(filepath)
+                except Exception:
+                    pass
                     
             if filepath.exists():
                 try:
@@ -569,6 +556,7 @@ def scrape_enforcement_actions(max_pages: int = 40) -> int:
                 pdf_processed=pdf_processed,
                 ocr_status=ocr_status,
                 extracted_text=extracted_text,
+                pdf_sha256=sha256_hash,
             )
             db.add(enforcement)
             db.commit()
@@ -723,12 +711,19 @@ def enrich_enforcement_pdfs(db: Session, limit: int = 50) -> int:
         updates: dict[str, object] = {}
         filepath = pdf_dir / f"{hash_id}.pdf"
         download_success = False
+        sha256_hash = None
 
         # Download if not exists locally
         if filepath.exists():
             download_success = True
             action.pdf_downloaded = True
             updates["pdf_downloaded"] = True
+            try:
+                sha256_hash = sha256_file(filepath)
+                action.pdf_sha256 = sha256_hash
+                updates["pdf_sha256"] = sha256_hash
+            except Exception:
+                pass
         else:
             logger.info("Downloading PDF: %s", pdf_link)
             content = _download_with_retry(pdf_link, retries=1, timeout=5)
@@ -738,6 +733,9 @@ def enrich_enforcement_pdfs(db: Session, limit: int = 50) -> int:
                     download_success = True
                     action.pdf_downloaded = True
                     updates["pdf_downloaded"] = True
+                    sha256_hash = sha256_bytes(content)
+                    action.pdf_sha256 = sha256_hash
+                    updates["pdf_sha256"] = sha256_hash
                     logger.info("PDF downloaded successfully.")
                     time.sleep(1)  # Throttle to respect rate limits
                 except Exception as e:

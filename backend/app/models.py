@@ -68,6 +68,7 @@ class EnforcementAction(Base):
     pdf_processed = Column(Boolean, default=False, nullable=False)
     ocr_status = Column(Enum(ProcessingStatus, native_enum=False), default=ProcessingStatus.PENDING, index=True)
     extracted_text = Column(Text, nullable=True)
+    pdf_sha256 = Column(String(64), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now_utc)
 
     facility = relationship("Facility", back_populates="enforcement_actions")
@@ -93,6 +94,7 @@ class Inspection(Base):
     processed_at = Column(DateTime)
     error_reason = Column(Text)
     source_type = Column(String, default="CSV_IMPORT")
+    pdf_sha256 = Column(String(64), nullable=True)
 
     facility = relationship("Facility", back_populates="inspections")
     violations = relationship("Violation", back_populates="inspection")

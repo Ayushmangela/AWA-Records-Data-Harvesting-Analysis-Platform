@@ -169,6 +169,8 @@ python-dotenv==1.2.2
     #   testcontainers
 python-json-logger==4.1.0
     # via -r requirements.in
+redis==8.0.0
+    # via -r requirements.in
 requests==2.34.2
     # via
     #   -r requirements.in

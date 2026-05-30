@@ -5,6 +5,7 @@ from dateutil.relativedelta import relativedelta
 from sqlalchemy import case, desc, func
 from sqlalchemy.orm import Session
 
+from app.services.category_mapper import map_section_to_category
 from app.models import EnforcementAction, Facility, Inspection, Inventory, Violation
 
 logger = logging.getLogger(__name__)
@@ -331,6 +332,250 @@ def calculate_facility_risk_flags(db: Session, facility_id: int) -> dict:
     flags["score"] = active_flags_count * 5
 
     return flags
+
+
+def build_facility_dossier_summary(facility: dict, inspections: list[dict], enforcements: list[dict]) -> dict:
+    """Build the facility dossier payload from preloaded records."""
+    total_inspections = len(inspections)
+    total_violations = sum(insp.get("violation_count") or 0 for insp in inspections)
+    unique_inspectors_count = len(
+        {insp.get("inspector_name") for insp in inspections if insp.get("inspector_name")}
+    )
+
+    critical_direct_count = sum(
+        1
+        for insp in inspections
+        for viol in insp.get("violations", [])
+        if viol.get("severity") and viol.get("severity").lower() in ("critical", "direct")
+    )
+
+    latest_animal_count = 0
+    latest_inv_inspection = next((insp for insp in inspections if insp.get("inventory")), None)
+    if latest_inv_inspection:
+        latest_animal_count = sum(item.get("count") or 0 for item in latest_inv_inspection.get("inventory", []))
+
+    licensed_limit = facility.get("licensed_animal_limit")
+    compliance_snapshot = {
+        "total_inspections": total_inspections,
+        "total_violations": total_violations,
+        "critical_direct_count": critical_direct_count,
+        "unique_inspectors_count": unique_inspectors_count,
+        "latest_animal_count": latest_animal_count,
+        "licensed_animal_limit": licensed_limit,
+    }
+
+    latest_inspection = None
+    if inspections:
+        latest = inspections[0]
+        latest_inspection = {
+            "inspection_date": latest.get("inspection_date"),
+            "inspection_type": latest.get("inspection_type"),
+            "inspector_name": latest.get("inspector_name"),
+            "violation_count": latest.get("violation_count") or 0,
+        }
+
+    risk_flags = {
+        "exceeds_animal_limit": False,
+        "high_direct_violations": False,
+        "inventory_spike": False,
+    }
+    if licensed_limit is not None and latest_animal_count > licensed_limit:
+        risk_flags["exceeds_animal_limit"] = True
+
+    cutoff_date = cutoff_18_months_ago()
+    direct_viol_count = sum(
+        1
+        for insp in inspections
+        for viol in insp.get("violations", [])
+        if insp.get("inspection_date")
+        and insp.get("inspection_date") >= cutoff_date
+        and viol.get("severity")
+        and viol.get("severity").lower() in ("critical", "direct")
+    )
+    if direct_viol_count > 3:
+        risk_flags["high_direct_violations"] = True
+
+    insps_with_inv = [insp for insp in inspections if insp.get("inventory")]
+    insps_with_inv.sort(key=lambda item: (item.get("inspection_date") or date.min, item.get("id")))
+    if len(insps_with_inv) >= 2:
+        prev_total = sum(item.get("count") or 0 for item in insps_with_inv[-2].get("inventory", []))
+        curr_total = sum(item.get("count") or 0 for item in insps_with_inv[-1].get("inventory", []))
+        if prev_total > 0 and curr_total > prev_total * 3:
+            risk_flags["inventory_spike"] = True
+
+    risk_flags["animal_limit_exceeded"] = risk_flags["exceeds_animal_limit"]
+    risk_flags["has_high_direct_violations"] = risk_flags["high_direct_violations"]
+    risk_flags["recent_inventory_spike"] = risk_flags["inventory_spike"]
+
+    active_flags_count = sum(
+        [
+            risk_flags["animal_limit_exceeded"],
+            risk_flags["has_high_direct_violations"],
+            risk_flags["recent_inventory_spike"],
+        ]
+    )
+    if risk_flags["has_high_direct_violations"] or active_flags_count >= 2:
+        risk_flags["risk_level"] = "HIGH"
+    elif active_flags_count == 1:
+        risk_flags["risk_level"] = "MEDIUM"
+    else:
+        risk_flags["risk_level"] = "LOW"
+
+    drivers = []
+    if risk_flags["animal_limit_exceeded"]:
+        drivers.append("Latest animal count exceeds licensed inventory limit")
+    if risk_flags["has_high_direct_violations"]:
+        drivers.append("More than 3 direct or critical violations in the last 18 months")
+    if risk_flags["recent_inventory_spike"]:
+        drivers.append("Significant animal inventory spike detected between recent audits")
+    risk_flags["risk_drivers"] = drivers
+
+    prioritized_facts = []
+    if latest_inspection and latest_inspection["inspection_date"]:
+        latest_date_str = latest_inspection["inspection_date"].strftime("%b %d, %Y").upper().replace(" ", "_")
+        prioritized_facts.append(
+            {
+                "key": "latest-insp",
+                "text": f"The most recent inspection on {latest_date_str} was a {latest_inspection['inspection_type'] or 'ROUTINE INSPECTION'} and recorded {latest_inspection['violation_count']} violation(s).",
+                "citations": [
+                    {
+                        "inspection_id": inspections[0]["id"],
+                        "inspection_date": latest_inspection["inspection_date"].isoformat(),
+                    }
+                ],
+            }
+        )
+
+    if licensed_limit:
+        for insp in inspections:
+            total_inv = sum(item.get("count") or 0 for item in insp.get("inventory", []))
+            if total_inv > licensed_limit:
+                insp_date_str = (
+                    insp["inspection_date"].strftime("%b %d, %Y").upper().replace(" ", "_")
+                    if insp.get("inspection_date")
+                    else None
+                )
+                prioritized_facts.append(
+                    {
+                        "key": f"limit-exceeded-{insp['id']}",
+                        "text": f"Total animal inventory ({total_inv}) exceeded the licensed limit of {licensed_limit} during the inspection on {insp_date_str or '—'}.",
+                        "citations": [
+                            {
+                                "inspection_id": insp["id"],
+                                "inspection_date": insp["inspection_date"].isoformat() if insp.get("inspection_date") else None,
+                            }
+                        ],
+                    }
+                )
+
+    all_critical_violations = []
+    for insp in inspections:
+        for viol in insp.get("violations", []) or []:
+            if viol.get("severity") and viol.get("severity").lower() in ("critical", "direct"):
+                all_critical_violations.append((insp, viol))
+
+    all_critical_violations.sort(
+        key=lambda item: (item[0].get("inspection_date") or date.min, item[0].get("id")),
+        reverse=True,
+    )
+    for insp, viol in all_critical_violations[:3]:
+        v_date_str = (
+            insp["inspection_date"].strftime("%b %d, %Y").upper().replace(" ", "_")
+            if insp.get("inspection_date")
+            else None
+        )
+        severity_label = viol.get("severity").upper() if viol.get("severity") else "VIOLATION"
+        desc = viol.get("description") or ""
+        desc_excerpt = desc[:90] + "..." if len(desc) > 90 else desc
+        prioritized_facts.append(
+            {
+                "key": f"viol-{viol['id']}",
+                "text": f"Cited for a {severity_label} violation of Section {viol.get('section') or '?'} ({map_section_to_category(viol.get('section'), viol.get('description')) or 'General Care'}) on {v_date_str or '—'}: \"{desc_excerpt}\"",
+                "citations": [
+                    {
+                        "inspection_id": insp["id"],
+                        "inspection_date": insp["inspection_date"].isoformat() if insp.get("inspection_date") else None,
+                        "source_page": viol.get("source_page"),
+                    }
+                ],
+            }
+        )
+
+    section_counts = {}
+    section_violations = {}
+    for insp in inspections:
+        for viol in insp.get("violations", []) or []:
+            sec = viol.get("section")
+            if sec:
+                section_counts[sec] = section_counts.get(sec, 0) + 1
+                section_violations.setdefault(sec, []).append((insp, viol))
+
+    for sec, count in section_counts.items():
+        if count >= 2:
+            cits = section_violations[sec]
+            prioritized_facts.append(
+                {
+                    "key": f"recurring-sec-{sec}",
+                    "text": f"Section {sec} was cited recurrently ({count} times) across multiple inspections.",
+                    "citations": [
+                        {
+                            "inspection_id": insp["id"],
+                            "inspection_date": insp["inspection_date"].isoformat() if insp.get("inspection_date") else None,
+                            "source_page": viol.get("source_page"),
+                        }
+                        for insp, viol in cits
+                    ],
+                }
+            )
+
+    recent_activities = []
+    for insp in inspections[:5]:
+        recent_activities.append(
+            {
+                "type": "inspection",
+                "id": insp["id"],
+                "date": insp["inspection_date"].isoformat() if insp.get("inspection_date") else None,
+                "title": "Inspection Conducted",
+                "violations": insp.get("violation_count") or 0,
+                "description": f"A {insp.get('inspection_type') or 'Routine'} inspection was completed by inspector {insp.get('inspector_name') or 'UNKNOWN'}, recording {insp.get('violation_count') or 0} violation(s).",
+            }
+        )
+
+    for act in enforcements:
+        penalty_amount = act.get("penalty_amount")
+        penalty_part = f"| Penalty: ${penalty_amount:,.2f}" if penalty_amount else ""
+        recent_activities.append(
+            {
+                "type": "enforcement",
+                "id": act["id"],
+                "date": act["action_date"].isoformat() if act.get("action_date") else None,
+                "title": f"Enforcement Action: {act.get('action_type')}",
+                "violations": 0,
+                "description": f"Outcome: {act.get('outcome') or 'PENDING'} {penalty_part}",
+            }
+        )
+
+    recent_activities.sort(key=lambda item: item["date"] or "", reverse=True)
+
+    return {
+        "id": facility["id"],
+        "name": facility["name"],
+        "customer_id": facility.get("customer_id"),
+        "certificate_number": facility.get("certificate_number"),
+        "license_status": facility.get("license_status"),
+        "license_type": facility.get("license_type"),
+        "address": facility.get("address"),
+        "city": facility.get("city"),
+        "state": facility.get("state"),
+        "zip_code": facility.get("zip_code"),
+        "county": facility.get("county"),
+        "licensed_animal_limit": licensed_limit,
+        "risk_flags": risk_flags,
+        "compliance_snapshot": compliance_snapshot,
+        "latest_inspection": latest_inspection,
+        "prioritized_facts": prioritized_facts[:5],
+        "recent_activities": recent_activities[:5],
+    }
 
 
 def calculate_inspector_anomaly(db: Session, inspector_id: str) -> dict:

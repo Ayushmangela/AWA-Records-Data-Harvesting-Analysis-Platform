@@ -4,14 +4,14 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import asc, desc, func, select
 from sqlalchemy.orm import Session
 
-from app.auth import require_api_key
+from app.auth import require_auth
 from app.database import get_db
 from app.limiter import limiter
 from app.models import Facility, Inspection, Violation
 from app.services.category_mapper import map_section_to_category
 
 router = APIRouter(
-    prefix="/violations", tags=["violations"], dependencies=[Depends(require_api_key)]
+    prefix="/violations", tags=["violations"], dependencies=[Depends(require_auth)]
 )
 
 

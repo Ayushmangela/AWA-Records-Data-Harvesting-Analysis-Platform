@@ -24,7 +24,7 @@ import {
   TimelinePanel,
 } from "../components/IntelligenceSystem";
 
-const CACHE_KEY = "dashboard-overview-cache:v2";
+const CACHE_KEY = "dashboard-overview-cache:v3";
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const PIE_COLORS = ["#e9c349", "#0ea5a4", "#f97316", "#ef4444", "#a855f7", "#22c55e"];
 
@@ -126,7 +126,6 @@ function SectionSkeleton() {
 
 export default function DashboardPage() {
   const glowRef = useRef(null);
-  const hasLoadedRef = useRef(false);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
@@ -144,9 +143,6 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    if (hasLoadedRef.current) return;
-    hasLoadedRef.current = true;
-
     const cached = readCache();
     if (cached?.data) {
       setData(cached.data);

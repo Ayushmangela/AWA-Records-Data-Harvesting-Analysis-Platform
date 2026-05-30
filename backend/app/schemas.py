@@ -43,6 +43,7 @@ class InspectionOut(BaseModel):
     violation_count: int | None
     source_pdf: str | None
     source_pdf_path: str | None
+    pdf_sha256: str | None = None
     violations: List[ViolationOut] = Field(default_factory=list)
     inventory: List[InventoryOut] = Field(default_factory=list)
 
@@ -97,6 +98,7 @@ class EnforcementActionOut(BaseModel):
     pdf_processed: bool
     ocr_status: str
     extracted_text: str | None = None
+    pdf_sha256: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

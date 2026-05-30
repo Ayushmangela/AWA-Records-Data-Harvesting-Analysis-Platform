@@ -20,3 +20,4 @@ slowapi
 pytest
 testcontainers[postgres]
 factory-boy
+redis

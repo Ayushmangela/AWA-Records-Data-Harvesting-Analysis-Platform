@@ -71,6 +71,8 @@ def start_scheduler():
         CronTrigger(hour=2, minute=0),
         id="nightly_usda_sync",
         replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
     scheduler.start()
     logger.info("Background scheduler started (nightly job at 02:00)")
