@@ -1,3 +1,11 @@
+import sys
+from pathlib import Path
+
+# Add backend directory to sys.path to ensure absolute app imports work robustly
+_backend_dir = str(Path(__file__).resolve().parent.parent.parent)
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
 import concurrent.futures
 import hashlib
 import json
@@ -6,7 +14,6 @@ import os
 import re
 import time
 from datetime import date, datetime, timezone
-from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError

@@ -1,6 +1,14 @@
+import os
+import sys
+from pathlib import Path
+
+# Add backend directory to sys.path to ensure absolute app imports work robustly
+_backend_dir = str(Path(__file__).resolve().parent.parent)
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
 import logging
 import logging.config
-import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -8,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
+from sqlalchemy import text
 
 from app import models  # noqa: F401
 from app.database import engine
@@ -44,12 +53,16 @@ async def lifespan(app: FastAPI):
             f"Database dialect must be postgresql, got {engine.dialect.name}. "
             "SQLite is not supported."
         )
-    start_scheduler()
+    if _scheduler_enabled():
+        start_scheduler()
+    else:
+        logging.getLogger(__name__).info("Scheduler startup disabled by ENABLE_SCHEDULER=false")
 
     yield  # application runs
 
     # ── Shutdown ─────────────────────────────────────────────────────────────
-    stop_scheduler()
+    if _scheduler_enabled():
+        stop_scheduler()
 
 
 app = FastAPI(title="AWA Platform", lifespan=lifespan)
@@ -100,6 +113,15 @@ def _expand_loopback_origins(origins: list[str]) -> list[str]:
     return expanded
 
 
+def _scheduler_enabled() -> bool:
+    return os.environ.get("ENABLE_SCHEDULER", "false").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 allowed_origins = _expand_loopback_origins(allowed_origins)
 
 app.add_middleware(
@@ -116,6 +138,17 @@ app.include_router(dashboard.router)
 app.include_router(violations.router)
 app.include_router(documents.router)
 app.include_router(enforcement.router)
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    """Health endpoint for liveness and DB connectivity."""
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except Exception as exc:
+        return {"status": "fail", "detail": str(exc)}
+    return {"status": "ok"}
 
 
 @app.get("/")
