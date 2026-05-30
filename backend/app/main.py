@@ -123,6 +123,10 @@ def _scheduler_enabled() -> bool:
 
 allowed_origins = _expand_loopback_origins(allowed_origins)
 
+logger = logging.getLogger(__name__)
+logger.info("CORS_ALLOWED_ORIGINS raw=%s", os.getenv("CORS_ALLOWED_ORIGINS"))
+logger.info("allowed_origins parsed=%s", allowed_origins)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
