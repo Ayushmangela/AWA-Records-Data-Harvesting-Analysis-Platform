@@ -14,6 +14,22 @@ function formatDate(value) {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }).toUpperCase().replace(/ /g, "_");
 }
 
+function sanitizeIngestionText(text) {
+  if (typeof text !== "string") return text;
+  const parts = text.split(/\s*([·|•]| - )\s*/);
+  const cleanedParts = parts.filter(part => {
+    const trimmed = part.trim().toLowerCase();
+    if (trimmed === "csv_import" || trimmed === "completed") {
+      return false;
+    }
+    if (trimmed === "·" || trimmed === "|" || trimmed === "•" || trimmed === "-") {
+      return false;
+    }
+    return part.trim() !== "";
+  });
+  return cleanedParts.join(" · ");
+}
+
 function AISummaryPanel({ facilityId, onCitationClick }) {
   const [summaryData, setSummaryData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -528,7 +544,11 @@ export default function FacilityPage() {
 
   // Compile recent dossier activities list
   const recentActivities = useMemo(() => {
-    return facility?.recent_activities || [];
+    return (facility?.recent_activities || []).map(act => ({
+      ...act,
+      title: sanitizeIngestionText(act.title),
+      description: sanitizeIngestionText(act.description)
+    }));
   }, [facility]);
 
   // Compile central searchable document library (metadata only)
@@ -568,9 +588,9 @@ export default function FacilityPage() {
             type: "enforcement",
             title: `Enforcement Action - ${formatDate(action.action_date)} (${action.action_type})`,
             date: action.action_date,
-            meta: `Outcome: ${action.outcome || "N/A"} | Penalty: $${action.penalty_amount?.toLocaleString() || "0"}`,
+            meta: `Outcome: ${sanitizeIngestionText(action.outcome) || "N/A"} | Penalty: $${action.penalty_amount?.toLocaleString() || "0"}`,
             pdfUrl,
-            ocrText: `ENFORCEMENT ACTION DETAILS:\nDate: ${action.action_date}\nType: ${action.action_type}\nOutcome: ${action.outcome || "N/A"}\nPenalty: $${action.penalty_amount?.toLocaleString() || "0"}\n\nEXTRACTED TEXT TRANSCRIPT:\n${action.extracted_text || action.summary || "No document text extracted by OCR."}`,
+            ocrText: `ENFORCEMENT ACTION DETAILS:\nDate: ${action.action_date}\nType: ${action.action_type}\nOutcome: ${sanitizeIngestionText(action.outcome) || "N/A"}\nPenalty: $${action.penalty_amount?.toLocaleString() || "0"}\n\nEXTRACTED TEXT TRANSCRIPT:\n${action.extracted_text || action.summary || "No document text extracted by OCR."}`,
             filename: action.source_pdf_path ? action.source_pdf_path.split('/').pop() : `enforcement_${action.id}.pdf`
           });
         }
@@ -1334,9 +1354,9 @@ export default function FacilityPage() {
 
                           {isSelected && (
                             <div className="pt-2 border-t border-white/5 flex flex-col gap-3" onClick={(e) => e.stopPropagation()}>
-                              {action.outcome && (
+                              {sanitizeIngestionText(action.outcome) && (
                                 <div className="flex flex-wrap gap-4 text-[12px] font-code-data text-on-surface-variant">
-                                  <span>Outcome: <strong className="text-tertiary">{action.outcome}</strong></span>
+                                  <span>Outcome: <strong className="text-tertiary">{sanitizeIngestionText(action.outcome)}</strong></span>
                                   {action.certificate && <span>Certificate: <strong className="text-on-surface">{action.certificate}</strong></span>}
                                 </div>
                               )}

@@ -29,6 +29,22 @@ function formatDateTime(value) {
   return parsed.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
+function sanitizeIngestionText(text) {
+  if (typeof text !== "string") return text;
+  const parts = text.split(/\s*([·|•]| - )\s*/);
+  const cleanedParts = parts.filter(part => {
+    const trimmed = part.trim().toLowerCase();
+    if (trimmed === "csv_import" || trimmed === "completed") {
+      return false;
+    }
+    if (trimmed === "·" || trimmed === "|" || trimmed === "•" || trimmed === "-") {
+      return false;
+    }
+    return part.trim() !== "";
+  });
+  return cleanedParts.join(" · ");
+}
+
 function readCache(key) {
   try {
     const raw = sessionStorage.getItem(key);
@@ -226,7 +242,7 @@ export default function EnforcementListPage() {
       results.slice(0, 6).map((row) => ({
         title: `${row.action_type || "Action"} at ${row.facility_name || "Unknown facility"}`,
         meta: formatDateTime(row.action_date),
-        body: `${row.outcome || "Pending"}${row.penalty_amount ? ` · $${row.penalty_amount.toLocaleString()}` : ""}`,
+        body: sanitizeIngestionText(`${row.outcome || "Pending"}${row.penalty_amount ? ` · $${row.penalty_amount.toLocaleString()}` : ""}`),
         tone: row.penalty_amount ? "critical" : "primary",
       })),
     [results],
@@ -294,7 +310,10 @@ export default function EnforcementListPage() {
                 { key: "action_date", label: "Action Date", render: (row) => formatDate(row.action_date) },
                 { key: "facility", label: "Facility", render: (row) => <Link to={`/facility/${row.facility_id}`} className="no-underline text-on-surface hover:text-secondary"><div className="font-headline-sm text-[15px] font-bold">{row.facility_name || "Unknown"}</div><div className="font-code-data text-[11px] uppercase tracking-widest text-on-surface-variant mt-1">{row.facility_state || "—"}</div></Link> },
                 { key: "action_type", label: "Action Type", render: (row) => <EvidenceBadge label={row.action_type || "Unknown"} tone="secondary" icon="gavel" /> },
-                { key: "outcome", label: "Outcome", render: (row) => row.outcome ? <SeverityBadge severity={row.outcome} /> : <span className="text-on-surface-variant">—</span> },
+                { key: "outcome", label: "Outcome", render: (row) => {
+                  const cleaned = sanitizeIngestionText(row.outcome);
+                  return cleaned ? <SeverityBadge severity={cleaned} /> : <span className="text-on-surface-variant">—</span>;
+                }},
                 { key: "penalty", label: "Penalty Amount", align: "right", render: (row) => row.penalty_amount != null ? <span className="font-code-data text-[14px] text-secondary">${row.penalty_amount.toLocaleString()}</span> : "—" },
                 { key: "actions", label: "Evidence", render: (row) => <div className="flex flex-wrap gap-2"><a className="bg-transparent border border-outline-variant/20 hover:border-secondary hover:text-secondary text-on-surface-variant px-3 py-1.5 rounded-full font-label-caps text-[10px] font-bold uppercase tracking-widest no-underline" href={pdfUrl(row.id)} target="_blank" rel="noreferrer">Open PDF</a><button className="bg-secondary text-on-secondary px-3 py-1.5 rounded-full font-label-caps text-[10px] font-bold uppercase tracking-widest border-none" onClick={() => openDetail(row.id)} type="button">Open Detail</button></div> },
               ]}
@@ -317,7 +336,7 @@ export default function EnforcementListPage() {
                       <Link to={`/facility/${selectedDetail.facility_id}`} className="no-underline text-secondary font-headline-sm text-[18px] font-bold">{selectedDetail.facility_name}</Link>
                       <div className="mt-3 text-sm text-on-surface-variant">Date: {formatDate(selectedDetail.action_date)}</div>
                       <div className="text-sm text-on-surface-variant">Type: {selectedDetail.action_type}</div>
-                      <div className="text-sm text-on-surface-variant">Outcome: {selectedDetail.outcome || "—"}</div>
+                      <div className="text-sm text-on-surface-variant">Outcome: {sanitizeIngestionText(selectedDetail.outcome) || "—"}</div>
                       <div className="text-sm text-on-surface-variant">Penalty: {selectedDetail.penalty_amount != null ? `$${selectedDetail.penalty_amount.toLocaleString()}` : "—"}</div>
                     </div>
                     <div className="rounded-2xl bg-surface-container-low p-4 border border-outline-variant/10">

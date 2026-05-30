@@ -59,6 +59,22 @@ function formatDateTime(value) {
   return parsed.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
+function sanitizeIngestionText(text) {
+  if (typeof text !== "string") return text;
+  const parts = text.split(/\s*([·|•]| - )\s*/);
+  const cleanedParts = parts.filter(part => {
+    const trimmed = part.trim().toLowerCase();
+    if (trimmed === "csv_import" || trimmed === "completed") {
+      return false;
+    }
+    if (trimmed === "·" || trimmed === "|" || trimmed === "•" || trimmed === "-") {
+      return false;
+    }
+    return part.trim() !== "";
+  });
+  return cleanedParts.join(" · ");
+}
+
 function readCache() {
   try {
     const raw = sessionStorage.getItem(CACHE_KEY);
@@ -216,7 +232,7 @@ export default function DashboardPage() {
         .map((item) => ({
           title: item.title,
           meta: formatDate(item.date),
-          body: item.detail,
+          body: sanitizeIngestionText(item.detail),
           tone: item.tone || "primary",
         })),
     [data],
@@ -227,7 +243,7 @@ export default function DashboardPage() {
       (data?.recent_activity || []).map((item) => ({
         title: item.title,
         meta: formatDateTime(item.date),
-        body: item.detail,
+        body: sanitizeIngestionText(item.detail),
         tone: item.tone || "primary",
       })),
     [data],
