@@ -29,6 +29,9 @@ cursor_project_context.md
 # Database
 *.db
 *.sqlite3
+*.dump
+*.csv
+supabase_backup_*.sql
 
 # Cache/temp
 .cache/
