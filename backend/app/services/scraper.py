@@ -1,4 +1,5 @@
 import concurrent.futures
+import hashlib
 import json
 import logging
 import os
@@ -18,6 +19,43 @@ from app.database import SessionLocal
 from app.models import EnforcementAction, Facility, Inspection, ProcessingStatus
 from app.services.pdf_utils import download_pdf_bytes, sha256_bytes, sha256_file
 from app.services.ocr import extract_text_from_pdf
+from app.config import PDF_STORAGE_PATH
+
+USDA_STATE_CODES = [
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA",
+    "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
+    "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT",
+    "VA", "WA", "WV", "WI", "WY", "DC",
+]
+
+USDA_SYNC_STATE: dict[str, object] = {
+    "last_run_at": None,
+    "last_run_type": None,
+    "status": "idle",
+    "last_run_success": None,
+    "last_error": None,
+    "new_inspections": 0,
+    "inspection_records_scanned": 0,
+    "inspection_duplicates_skipped": 0,
+    "new_enforcement_actions": 0,
+    "enforcement_records_scanned": 0,
+    "enforcement_duplicates_skipped": 0,
+    "skipped_missing_pdf": 0,
+}
+
+
+def _update_usda_sync_state(**kwargs) -> None:
+    for key, value in kwargs.items():
+        if key in USDA_SYNC_STATE:
+            USDA_SYNC_STATE[key] = value
+
+
+def get_usda_sync_metrics() -> dict[str, object]:
+    metrics = USDA_SYNC_STATE.copy()
+    last_run_at = metrics.get("last_run_at")
+    if isinstance(last_run_at, datetime):
+        metrics["last_run_at"] = last_run_at.isoformat()
+    return metrics
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -38,8 +76,6 @@ def generate_hash_id(url: str) -> str:
     elif "oid" in qs and "d" in qs:
         return hashlib.md5((qs["oid"][0] + qs["d"][0]).encode(), usedforsecurity=False).hexdigest()  # noqa: S324
 
-    import hashlib
-
     return hashlib.md5(url.encode(), usedforsecurity=False).hexdigest()  # noqa: S324
 
 
@@ -47,12 +83,15 @@ def _download_with_retry(url: str, retries: int = 3, timeout: int = 15) -> bytes
     return download_pdf_bytes(url, retries=retries, timeout=timeout)
 
 
-def scrape_state(state_code: str = "TX", license_type: str = "BREEDER", max_pages: int = 10) -> int:
+def scrape_state(state_code: str = "TX", license_type: str | None = None, max_pages: int = 0) -> dict[str, int]:
     """
     Scrape USDA inspections using JS-driven Network Interception to bypass
     Salesforce DOM obfuscation.
     """
-    logger.info(f"Starting USDA sync for {state_code} - {license_type} (Headless: {HEADLESS})")
+    logger.info(
+        f"Starting USDA sync for state={state_code}, license_type={license_type or 'ALL'} "
+        f"(Headless: {HEADLESS})"
+    )
 
     db = SessionLocal()
     try:
@@ -61,10 +100,13 @@ def scrape_state(state_code: str = "TX", license_type: str = "BREEDER", max_page
             logger.info(f"Latest inspection date in DB: {latest_date}")
         else:
             logger.info("No existing inspections found. Performing full historical sync.")
-            latest_date = date(2000, 1, 1)
 
-        downloaded_count = 0
-        intercepted_records = []
+        result = {
+            "new_inspections": 0,
+            "records_scanned": 0,
+            "duplicates_skipped": 0,
+        }
+        intercepted_records: list[dict] = []
 
         def handle_response(response):
             if "aura" in response.url and response.status == 200:
@@ -106,15 +148,15 @@ def scrape_state(state_code: str = "TX", license_type: str = "BREEDER", max_page
 
                 page.wait_for_timeout(1000)
 
-                # Select License Type
-                type_dropdown = page.locator('button[aria-label="Certificate Type"]')
-                if type_dropdown.count() > 0:
-                    type_dropdown.click()
-                    page.locator(
-                        f'lightning-base-combobox-item[data-value="{license_type}"]'
-                    ).click()
-
-                page.wait_for_timeout(1000)
+                # Select License Type only if explicitly requested.
+                if license_type:
+                    type_dropdown = page.locator('button[aria-label="Certificate Type"]')
+                    if type_dropdown.count() > 0:
+                        type_dropdown.click()
+                        page.locator(
+                            f'lightning-base-combobox-item[data-value="{license_type}"]'
+                        ).click()
+                        page.wait_for_timeout(1000)
 
                 # Click Search
                 search_btn = page.locator('button:has-text("Search")')
@@ -124,7 +166,7 @@ def scrape_state(state_code: str = "TX", license_type: str = "BREEDER", max_page
                 page.wait_for_timeout(8000)
 
                 current_page = 1
-                while current_page <= max_pages:
+                while True:
                     logger.info(
                         f"Page {current_page}: Executing JS to query all inspection reports..."
                     )
@@ -133,16 +175,17 @@ def scrape_state(state_code: str = "TX", license_type: str = "BREEDER", max_page
                     page.evaluate("""
                         const btns = Array.from(document.querySelectorAll('button[title="Query Inspection Reports"]'));  // noqa: E501
                         for(let i=0; i<btns.length; i++) {
-                            setTimeout(() => btns[i].click(), i * 400); // Stagger clicks to prevent rate limits  // noqa: E501
+                            setTimeout(() => btns[i].click(), i * 750); // Stagger clicks to prevent rate limits  // noqa: E501
                         }
                     """)
 
-                    # Wait for all network requests to finish
                     page.wait_for_timeout(15000)
 
                     logger.info(f"Captured {len(intercepted_records)} records total so far.")
 
-                    # Click Next Page
+                    if max_pages and current_page >= max_pages:
+                        break
+
                     next_btn = page.locator('button[title="Next Page"]')
                     if next_btn.count() > 0 and not next_btn.is_disabled():
                         next_btn.click()
@@ -155,11 +198,10 @@ def scrape_state(state_code: str = "TX", license_type: str = "BREEDER", max_page
                 logger.error("Playwright timed out waiting for page to load.")
             except Exception as e:
                 logger.error(f"Scraper encountered a critical error: {e}")
+            finally:
+                browser.close()
 
-            browser.close()
-
-        # Deduplicate records by hash id
-        unique_records = {}
+        unique_records: dict[str, dict] = {}
         for r in intercepted_records:
             pdf_link = r.get("reportLink", "")
             if pdf_link:
@@ -169,11 +211,12 @@ def scrape_state(state_code: str = "TX", license_type: str = "BREEDER", max_page
                     continue
                 unique_records[hash_id] = r
 
+        result["records_scanned"] = len(unique_records)
         logger.info(
             f"Finished interception. Processing {len(unique_records)} unique valid records."
         )
 
-        pdf_dir = Path(__file__).resolve().parent.parent.parent / "data" / "raw_pdfs"
+        pdf_dir = PDF_STORAGE_PATH
         pdf_dir.mkdir(parents=True, exist_ok=True)
 
         for hash_id, rec in unique_records.items():
@@ -195,7 +238,6 @@ def scrape_state(state_code: str = "TX", license_type: str = "BREEDER", max_page
                 if raw_date:
                     for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S.%fZ", "%m/%d/%Y"):
                         try:
-                            # Keep parsed time timezone-aware before extracting date to satisfy DTZ
                             parsed_dt = datetime.strptime(raw_date, fmt)  # noqa: DTZ007
                             if parsed_dt.tzinfo is None:
                                 parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
@@ -207,30 +249,18 @@ def scrape_state(state_code: str = "TX", license_type: str = "BREEDER", max_page
                 if not insp_date:
                     continue
 
-                if (latest_date - insp_date).days > 7:
-                    continue
-
-                exists = (
-                    db.query(Inspection)
-                    .join(Facility)
-                    .filter(
-                        Facility.certificate_number == cert_num,
-                        Inspection.inspection_date == insp_date,
-                        Inspection.source_pdf_path == hash_id,
-                    )
-                    .first()
-                )
-
+                exists = db.query(Inspection).filter(
+                    Inspection.source_pdf_path == hash_id,
+                ).first()
                 if exists:
+                    result["duplicates_skipped"] += 1
                     continue
 
-                facility = (
-                    db.query(Facility).filter(Facility.certificate_number == cert_num).first()
-                )
+                facility = db.query(Facility).filter(Facility.certificate_number == cert_num).first()
                 if not facility:
                     facility = Facility(
-                        name=customer_name,
-                        certificate_number=cert_num,
+                        name=customer_name or f"USDA facility {cert_num}",
+                        certificate_number=cert_num or None,
                         license_type=license_type,
                         license_status="ACTIVE",
                         city=city,
@@ -238,6 +268,8 @@ def scrape_state(state_code: str = "TX", license_type: str = "BREEDER", max_page
                     )
                     db.add(facility)
                     db.flush()
+                elif license_type and not facility.license_type:
+                    facility.license_type = license_type
 
                 filepath = pdf_dir / f"{hash_id}.pdf"
                 sha256_hash = None
@@ -247,7 +279,7 @@ def scrape_state(state_code: str = "TX", license_type: str = "BREEDER", max_page
                     if content is not None:
                         filepath.write_bytes(content)
                         sha256_hash = sha256_bytes(content)
-                        time.sleep(1)  # Throttle downloads
+                        time.sleep(1)
                     else:
                         logger.error(f"Failed to download {pdf_link}")
                         continue
@@ -269,62 +301,87 @@ def scrape_state(state_code: str = "TX", license_type: str = "BREEDER", max_page
                 )
                 db.add(inspection)
                 db.commit()
-                downloaded_count += 1
+                result["new_inspections"] += 1
 
             except Exception:
                 logger.exception("Error processing record %s", hash_id)
                 db.rollback()
 
-        logger.info(f"Sync complete. {downloaded_count} new inspections added.")
-        return downloaded_count
+        logger.info(f"Sync complete. {result['new_inspections']} new inspections added.")
+        return result
 
     finally:
         db.close()
 
 
-def check_and_download_new_pdfs():
-    """Wrapper for the scheduler to trigger the sync across priority states."""
-    total_downloaded = 0
-    for state in ["TX"]:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(scrape_state, state_code=state, license_type="BREEDER")
+def check_and_download_new_pdfs(sync_type: str = "nightly_incremental") -> dict[str, int]:
+    """Wrapper for the scheduler to trigger national USDA sync across all supported states."""
+    logger.info("Starting USDA PDF sync (%s)...", sync_type)
+    _update_usda_sync_state(
+        last_run_at=datetime.now(timezone.utc),
+        last_run_type=sync_type,
+        status="running",
+        last_run_success=None,
+        last_error=None,
+    )
+    sync_metrics = {
+        "new_inspections": 0,
+        "records_scanned": 0,
+        "duplicates_skipped": 0,
+    }
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        future_to_state = {
+            executor.submit(scrape_state, state_code=state, license_type=None, max_pages=0): state
+            for state in USDA_STATE_CODES
+        }
+        for future in concurrent.futures.as_completed(future_to_state):
+            state = future_to_state[future]
             try:
-                # 30 minutes overall timeout for this state's scrape
-                total_downloaded += future.result(timeout=1800)
+                state_result = future.result(timeout=1800)
+                sync_metrics["new_inspections"] += state_result.get("new_inspections", 0)
+                sync_metrics["records_scanned"] += state_result.get("records_scanned", 0)
+                sync_metrics["duplicates_skipped"] += state_result.get("duplicates_skipped", 0)
             except concurrent.futures.TimeoutError:
                 logger.error("Scraper timed out after 30 minutes for state %s", state)
             except Exception:
                 logger.exception("Scraper failed for state %s", state)
-    return total_downloaded
+
+    _update_usda_sync_state(
+        last_run_at=datetime.now(timezone.utc),
+        last_run_type=sync_type,
+        status="completed",
+        last_run_success=True,
+        new_inspections=sync_metrics["new_inspections"],
+        inspection_records_scanned=sync_metrics["records_scanned"],
+        inspection_duplicates_skipped=sync_metrics["duplicates_skipped"],
+    )
+    return sync_metrics
 
 
-def scrape_enforcement_actions(max_pages: int = 40) -> int:
+def scrape_enforcement_actions(max_pages: int = 0) -> dict[str, int]:
     """
     Scrape USDA warnings and enforcement actions from:
     https://www.aphis.usda.gov/animal-care/awa-services/animal-welfare-horse-protection-actions
-    
-    Only process and link records that match existing facilities in the DB.
-    Focus on facilities with 2025-2026 inspection data.
+
+    Record all available enforcement actions and import them if they are new.
     """
     logger.info("Starting USDA Enforcement Actions sync...")
     db = SessionLocal()
-    downloaded_count = 0
-    
-    # Pre-fetch existing facility mappings to avoid repeated DB queries
+    result = {
+        "new_enforcement_actions": 0,
+        "records_scanned": 0,
+        "duplicates_skipped": 0,
+        "skipped_missing_pdf": 0,
+    }
+
     facilities = db.query(Facility.id, Facility.customer_id, Facility.certificate_number).all()
     cust_map = {f.customer_id.strip(): f.id for f in facilities if f.customer_id}
     cert_map = {f.certificate_number.strip(): f.id for f in facilities if f.certificate_number}
-    
-    # Identify priority facilities with 2025-2026 inspection data
-    priority_ids = {
-        row[0] for row in db.query(Inspection.facility_id)
-        .filter(Inspection.inspection_date >= date(2025, 1, 1))
-        .all()
-    }
-    
+
     try:
-        captured_records = []
-        
+        captured_records: list[dict] = []
+
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=HEADLESS, args=["--no-sandbox"])
             context = browser.new_context(
@@ -336,28 +393,25 @@ def scrape_enforcement_actions(max_pages: int = 40) -> int:
             )
             page = context.new_page()
             url = "https://www.aphis.usda.gov/animal-care/awa-services/animal-welfare-horse-protection-actions"
-            
+
             try:
                 page.goto(url, wait_until="networkidle", timeout=60000)
                 page.wait_for_timeout(5000)
-                
+
                 current_page = 1
-                stop_scraping = False
-                
-                while current_page <= max_pages and not stop_scraping:
+                while True:
                     logger.info(f"Scraping enforcement page {current_page}...")
                     rows = page.locator("table tbody tr").all()
-                    
+
                     if not rows:
                         logger.warning("No rows found in table.")
                         break
-                        
+
                     for row in rows:
                         cells = row.locator("td").all()
                         if len(cells) < 7:
                             continue
-                            
-                        # Column 0: Link with DBA name
+
                         link_el = cells[0].locator("a")
                         if link_el.count() > 0:
                             dba = link_el.text_content().strip()
@@ -365,14 +419,13 @@ def scrape_enforcement_actions(max_pages: int = 40) -> int:
                         else:
                             dba = cells[0].text_content().strip()
                             pdf_href = None
-                            
+
                         cert_num = cells[2].text_content().strip()
                         cust_num = cells[3].text_content().strip()
                         lic_category = cells[4].text_content().strip()
                         date_str = cells[5].text_content().strip()
                         enf_type = cells[6].text_content().strip()
-                        
-                        # Parse date
+
                         action_date = None
                         for fmt in ("%m/%d/%Y", "%Y-%m-%d"):
                             try:
@@ -383,19 +436,13 @@ def scrape_enforcement_actions(max_pages: int = 40) -> int:
                                 break
                             except ValueError:
                                 continue
-                                
+
                         if not action_date:
                             continue
-                            
-                        # Check date limit (2025-2026 only)
-                        if action_date.year < 2025:
-                            logger.info(f"Reached record dated {action_date} (< 2025). Stopping scraper.")
-                            stop_scraping = True
-                            break
-                            
+
                         if pdf_href and not pdf_href.startswith("http"):
                             pdf_href = f"https://www.aphis.usda.gov{pdf_href}"
-                            
+
                         captured_records.append({
                             "dba": dba,
                             "certificate": cert_num,
@@ -405,17 +452,16 @@ def scrape_enforcement_actions(max_pages: int = 40) -> int:
                             "action_type": enf_type,
                             "source_pdf": pdf_href,
                         })
-                        
-                    if stop_scraping:
+
+                    if max_pages > 0 and current_page >= max_pages:
                         break
-                        
-                    # Click next page
+
                     next_button = page.locator("a.dt-paging-button.next")
                     if next_button.count() == 0 or "disabled" in (next_button.get_attribute("class") or ""):
                         next_button = page.locator("button.next")
                     if next_button.count() == 0 or "disabled" in (next_button.get_attribute("class") or ""):
                         next_button = page.get_by_role("link", name="Next")
-                        
+
                     if next_button.count() > 0 and next_button.first.is_visible() and "disabled" not in (next_button.first.get_attribute("class") or ""):
                         next_button.first.click()
                         page.wait_for_timeout(3000)
@@ -426,52 +472,52 @@ def scrape_enforcement_actions(max_pages: int = 40) -> int:
                 logger.error(f"Error during page navigation/scraping: {e}")
             finally:
                 browser.close()
-                
-        # Now process captured records and match to existing facilities in DB
+
+        result["records_scanned"] = len(captured_records)
         logger.info(f"Processing {len(captured_records)} enforcement actions...")
-        pdf_dir = Path(__file__).resolve().parent.parent.parent / "data" / "raw_pdfs"
+        pdf_dir = PDF_STORAGE_PATH
         pdf_dir.mkdir(parents=True, exist_ok=True)
-        
+
         for rec in captured_records:
             cust_id_clean = rec["customer_id"].strip()
             cert_clean = rec["certificate"].strip()
-            
-            # 1. Match Customer ID
+
             facility_id = cust_map.get(cust_id_clean)
-            
-            # 2. Fallback to Certificate Number
             if not facility_id and cert_clean:
                 facility_id = cert_map.get(cert_clean)
-                
-            # If no matching facility exists, skip the record.
-            if not facility_id:
-                logger.debug(f"Skipping record for '{rec['dba']}' (Cust: {cust_id_clean}, Cert: {cert_clean}): No matching facility in DB.")
-                continue
-                
-            is_priority = facility_id in priority_ids
-            logger.info(f"Linked enforcement for '{rec['dba']}' (Facility ID: {facility_id}, Priority: {is_priority})")
-            
+
+            if not facility_id and cert_clean:
+                facility = Facility(
+                    name=rec["dba"] or f"USDA Enforcement {cert_clean}",
+                    customer_id=cust_id_clean or None,
+                    certificate_number=cert_clean or None,
+                    license_status="UNKNOWN",
+                    city=None,
+                    state=None,
+                )
+                db.add(facility)
+                db.flush()
+                facility_id = facility.id
+                cert_map[cert_clean] = facility_id
+
             pdf_link = rec["source_pdf"]
             if not pdf_link:
+                result["skipped_missing_pdf"] += 1
                 continue
-                
+
             hash_id = generate_hash_id(pdf_link)
             if not HASH_RE.match(hash_id):
                 logger.warning(f"Invalid hash generated: {hash_id}. Skipping record.")
                 continue
-                
-            # Check if record already exists in DB
+
             exists = db.query(EnforcementAction).filter(
-                EnforcementAction.facility_id == facility_id,
-                EnforcementAction.action_date == rec["action_date"],
-                EnforcementAction.source_pdf_path == hash_id
+                EnforcementAction.source_pdf_path == hash_id,
             ).first()
-            
             if exists:
+                result["duplicates_skipped"] += 1
                 continue
-                
-            # Download PDF
-            filepath = pdf_dir / f"{hash_id}.pdf"
+
+            filepath = PDF_STORAGE_PATH / f"{hash_id}.pdf"
             pdf_text = ""
             sha256_hash = None
             if not filepath.exists():
@@ -480,7 +526,7 @@ def scrape_enforcement_actions(max_pages: int = 40) -> int:
                 if content is not None:
                     filepath.write_bytes(content)
                     sha256_hash = sha256_bytes(content)
-                    time.sleep(1)  # Throttle downloads
+                    time.sleep(1)
                 else:
                     logger.error(f"Failed to download PDF from {pdf_link}")
             else:
@@ -488,7 +534,7 @@ def scrape_enforcement_actions(max_pages: int = 40) -> int:
                     sha256_hash = sha256_file(filepath)
                 except Exception:
                     pass
-                    
+
             if filepath.exists():
                 try:
                     ext_res = extract_text_from_pdf(filepath)
@@ -496,8 +542,7 @@ def scrape_enforcement_actions(max_pages: int = 40) -> int:
                         pdf_text = ext_res.get("text", "")
                 except Exception as e:
                     logger.error(f"Failed extracting text from {filepath}: {e}")
-                    
-            # Parse penalty amount
+
             penalty_amount = None
             if pdf_text:
                 penalty_matches = []
@@ -508,7 +553,11 @@ def scrape_enforcement_actions(max_pages: int = 40) -> int:
                     except ValueError:
                         continue
                 if penalty_matches:
-                    context_match = re.search(r"(?:civil penalty|penalty|fine|assess)\s*(?:of|in the amount of|valued at)?\s*\$\s*([0-9,]+(?:\.[0-9]{2})?)", pdf_text, re.IGNORECASE)
+                    context_match = re.search(
+                        r"(?:civil penalty|penalty|fine|assess)\s*(?:of|in the amount of|valued at)?\s*\$\s*([0-9,]+(?:\.[0-9]{2})?)",
+                        pdf_text,
+                        re.IGNORECASE,
+                    )
                     if context_match:
                         try:
                             penalty_amount = float(context_match.group(1).replace(",", ""))
@@ -518,8 +567,7 @@ def scrape_enforcement_actions(max_pages: int = 40) -> int:
                         reasonable_fines = [p for p in penalty_matches if p < 1000000]
                         if reasonable_fines:
                             penalty_amount = max(reasonable_fines)
-                            
-            # Create a clean summary
+
             summary = ""
             pdf_downloaded = False
             pdf_processed = False
@@ -541,7 +589,7 @@ def scrape_enforcement_actions(max_pages: int = 40) -> int:
                     pdf_downloaded = True
                     pdf_processed = False
                     ocr_status = ProcessingStatus.FAILED
-                
+
             enforcement = EnforcementAction(
                 facility_id=facility_id,
                 certificate=cert_clean or None,
@@ -560,11 +608,19 @@ def scrape_enforcement_actions(max_pages: int = 40) -> int:
             )
             db.add(enforcement)
             db.commit()
-            downloaded_count += 1
-            
-        logger.info(f"Enforcement actions sync complete. {downloaded_count} records imported.")
-        return downloaded_count
-        
+            result["new_enforcement_actions"] += 1
+
+        logger.info(
+            f"Enforcement actions sync complete. {result['new_enforcement_actions']} records imported."
+        )
+        _update_usda_sync_state(
+            new_enforcement_actions=result["new_enforcement_actions"],
+            enforcement_records_scanned=result["records_scanned"],
+            enforcement_duplicates_skipped=result["duplicates_skipped"],
+            last_error=None,
+        )
+        return result
+
     finally:
         db.close()
 
@@ -587,8 +643,6 @@ def enrich_enforcement_pdfs(db: Session, limit: int = 50) -> int:
 
     def _pending_filter(query: Session):
         return query.filter(
-            EnforcementAction.facility_id.isnot(None),
-            EnforcementAction.action_date >= date(2025, 1, 1),
             or_(
                 EnforcementAction.pdf_downloaded.is_(False),
                 EnforcementAction.ocr_status == ProcessingStatus.PENDING,
@@ -596,10 +650,7 @@ def enrich_enforcement_pdfs(db: Session, limit: int = 50) -> int:
         )
 
     def _counts() -> tuple[int, int, int]:
-        base = active_db.query(EnforcementAction).filter(
-            EnforcementAction.facility_id.isnot(None),
-            EnforcementAction.action_date >= date(2025, 1, 1),
-        )
+        base = active_db.query(EnforcementAction)
         completed = base.filter(EnforcementAction.ocr_status == ProcessingStatus.COMPLETED).count()
         pending = base.filter(
             or_(
@@ -675,7 +726,7 @@ def enrich_enforcement_pdfs(db: Session, limit: int = 50) -> int:
         return 0
 
     logger.info("Found %s enforcement actions to enrich.", len(action_ids))
-    pdf_dir = Path(__file__).resolve().parent.parent.parent / "data" / "raw_pdfs"
+    pdf_dir = PDF_STORAGE_PATH
     pdf_dir.mkdir(parents=True, exist_ok=True)
 
     processed_count = 0
@@ -865,20 +916,32 @@ def enrich_enforcement_pdfs(db: Session, limit: int = 50) -> int:
 
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) > 1 and sys.argv[1] == "enforcement":
-        scrape_enforcement_actions()
-    elif len(sys.argv) > 1 and sys.argv[1] == "enrich-enforcement":
-        while True:
-            db_session = SessionLocal()
-            try:
-                num_processed = enrich_enforcement_pdfs(db_session, limit=100)
-                if num_processed == 0:
-                    logger.info("No more enforcement records to enrich. Exiting loop.")
-                    break
-            finally:
-                db_session.close()
-            logger.info("Sleeping 5 seconds before next batch...")
-            time.sleep(5)
+
+    if len(sys.argv) > 1:
+        command = sys.argv[1].lower()
+        if command == "enforcement":
+            scrape_enforcement_actions(max_pages=0)
+        elif command == "backfill":
+            check_and_download_new_pdfs(sync_type="historical_backfill")
+            scrape_enforcement_actions(max_pages=0)
+        elif command == "nightly":
+            check_and_download_new_pdfs(sync_type="nightly_incremental")
+            scrape_enforcement_actions(max_pages=0)
+        elif command == "enrich-enforcement":
+            while True:
+                db_session = SessionLocal()
+                try:
+                    num_processed = enrich_enforcement_pdfs(db_session, limit=100)
+                    if num_processed == 0:
+                        logger.info("No more enforcement records to enrich. Exiting loop.")
+                        break
+                finally:
+                    db_session.close()
+                logger.info("Sleeping 5 seconds before next batch...")
+                time.sleep(5)
+        else:
+            logger.warning("Unknown command %s. Use enforcement, nightly, backfill, or enrich-enforcement.", command)
+            print("Usage: python script.py [enforcement | backfill | nightly]")
     else:
-        scrape_state("TX", "BREEDER", max_pages=1)
+        print("Usage: python script.py [enforcement | backfill | nightly]")
 
