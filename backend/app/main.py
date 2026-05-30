@@ -3,7 +3,7 @@ import logging.config
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -58,6 +58,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AWA Platform", lifespan=lifespan)
+
+@app.middleware("http")
+async def log_request_middleware(request: Request, call_next):
+    logger = logging.getLogger("request_logger")
+    logger.info("Request: %s %s", request.method, request.url.path)
+    response = await call_next(request)
+    return response
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
