@@ -61,7 +61,7 @@ app = FastAPI(title="AWA Platform", lifespan=lifespan)
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-app.add_middleware(SlowAPIMiddleware)
+# app.add_middleware(SlowAPIMiddleware)
 
 cors_origins_str = os.environ.get("CORS_ALLOWED_ORIGINS", "")
 allowed_origins = [o.strip() for o in cors_origins_str.split(",") if o.strip()]
